@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iFlow Memory</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:system-ui,-apple-system,sans-serif;display:flex;min-height:100vh;font-size:15px}
+a{color:#58a6ff;text-decoration:none}
+.sidebar{width:220px;background:#161b22;border-right:1px solid #30363d;padding:16px 0;flex-shrink:0;position:fixed;top:0;left:0;bottom:0;overflow-y:auto}
+.sidebar h2{padding:14px 20px;font-size:16px;color:#58a6ff;border-bottom:1px solid #30363d;margin-bottom:8px}
+.sidebar a{display:block;padding:11px 20px;color:#8b949e;font-size:15px;transition:all .2s}
+.sidebar a:hover,.sidebar a.active{background:#1f2937;color:#c9d1d9;border-left:3px solid #58a6ff}
+.main{margin-left:220px;flex:1;display:flex;justify-content:center;padding:32px 24px;min-height:100vh}
+#app{width:100%;max-width:880px}
+h1{font-size:22px;margin-bottom:18px;color:#e6edf3}
+h2.section-title{font-size:17px;color:#8b949e;margin:24px 0 12px;border-bottom:1px solid #21262d;padding-bottom:8px}
+
+.cards{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:20px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;transition:border-color .2s}
+.card:hover{border-color:#58a6ff}
+.card .label{font-size:13px;color:#8b949e;margin-bottom:6px}
+.card .value{font-size:26px;font-weight:600;color:#e6edf3}
+.card .sub{font-size:12px;color:#8b949e;margin-top:6px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.green{background:#3fb950;box-shadow:0 0 6px #3fb950}
+.dot.red{background:#f85149;box-shadow:0 0 6px #f85149}
+.dot.blue{background:#58a6ff}
+.dot.yellow{background:#d29922}
+@keyframes pulse{0%,100%{box-shadow:0 0 4px #3fb950}50%{box-shadow:0 0 12px #3fb950}}
+.dot.pulse{animation:pulse 2s infinite}
+.svc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:20px}
+.svc-item{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between}
+.svc-item .svc-left{display:flex;align-items:center;gap:8px}
+.svc-item .svc-name{font-size:14px;color:#c9d1d9}
+.svc-item .btn-sm{font-size:12px;padding:3px 10px;border-radius:4px;background:#da3633;color:#fff;border:none;cursor:pointer}
+.svc-item .btn-sm:hover{background:#f85149}
+
+input,select,textarea{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:9px 14px;border-radius:6px;font-size:14px;width:100%}
+input:focus,select:focus{outline:none;border-color:#58a6ff}
+button{background:#238636;color:#fff;border:none;padding:9px 18px;border-radius:6px;cursor:pointer;font-size:14px;transition:background .2s}
+button:hover{background:#2ea043}
+button.secondary{background:#30363d}button.secondary:hover{background:#484f58}
+button.danger{background:#da3633}button.danger:hover{background:#f85149}
+button:disabled{opacity:.5;cursor:not-allowed}
+.search-box{display:flex;gap:8px;margin-bottom:16px}
+.search-box input{flex:1}
+.content-box{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:18px;font-family:monospace;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-all;max-height:600px;overflow-y:auto}
+.file-list{list-style:none}
+.file-list li{padding:12px 14px;border-bottom:1px solid #21262d;display:flex;justify-content:space-between;align-items:center;cursor:pointer;transition:background .2s}
+.file-list li:hover{background:#1f2937}
+.file-list .fname{color:#58a6ff;font-family:monospace;font-size:14px}
+.file-list .fmeta{color:#8b949e;font-size:13px}
+.radio-group{display:flex;flex-direction:column;gap:10px;margin:12px 0}
+.radio-group label{display:flex;align-items:flex-start;gap:10px;padding:14px;background:#161b22;border:1px solid #30363d;border-radius:6px;cursor:pointer;transition:border-color .2s}
+.radio-group label:hover{border-color:#58a6ff}
+.radio-group label.selected{border-color:#58a6ff;background:#1a2332}
+.radio-group .rname{font-size:15px;font-weight:500;color:#e6edf3}
+.radio-group .rdesc{font-size:13px;color:#8b949e;margin-top:3px}
+
+.preset-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.preset-card .pname{font-weight:600;color:#e6edf3;font-size:15px}
+.preset-card .pmodel{font-size:13px;color:#8b949e}
+.form-row{margin-bottom:14px}
+.form-row label{display:block;font-size:13px;color:#8b949e;margin-bottom:5px}
+.msg{padding:10px 14px;border-radius:6px;margin:12px 0;font-size:14px}
+.msg.ok{background:#1a3a2a;color:#3fb950;border:1px solid #238636}
+.msg.err{background:#3a1a1a;color:#f85149;border:1px solid #da3633}
+.rule-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px}
+.rule-card .rule-desc{font-size:14px;color:#e6edf3;margin-bottom:6px}
+.rule-card .rule-badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:4px;background:#30363d;color:#8b949e;margin-bottom:8px}
+.rule-card .rule-pattern{font-family:monospace;font-size:12px;color:#8b949e;background:#0d1117;padding:8px;border-radius:4px;display:none;word-break:break-all;margin-top:6px}
+.rule-card .rule-toggle{font-size:12px;color:#58a6ff;cursor:pointer}
+.rule-card .rule-toggle:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<nav class="sidebar">
+<h2>iFlow Memory</h2>
+<a href="#" data-page="overview" class="active">概览</a>
+<a href="#" data-page="index">索引</a>
+<a href="#" data-page="summaries">摘要</a>
+<a href="#" data-page="model">模型</a>
+<a href="#" data-page="strategy">策略</a>
+<a href="#" data-page="rules">清洗规则</a>
+</nav>
+<div class="main"><div id="app"></div></div>
+<script>
+const $=s=>document.querySelector(s);
+const app=document.getElementById("app");
+const api=p=>fetch(p).then(r=>r.json());
+const post=(p,b)=>fetch(p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json());
+const del=p=>fetch(p,{method:"DELETE"}).then(r=>r.json());
+function esc(s){if(!s)return "";const d=document.createElement("div");d.textContent=s;return d.innerHTML}
+function fmtSize(b){return b<1024?b+"B":b<1048576?(b/1024).toFixed(1)+"KB":(b/1048576).toFixed(1)+"MB"}
+function fmtDate(ts){return new Date(ts*1000).toLocaleString("zh-CN")}
+function msg(text,ok){return `<div class="msg ${ok!==false?'ok':'err'}">${esc(text)}</div>`}
+
+const SN={on_compress:"压缩模式",interval:"定时模式",idle:"空闲模式",realtime:"实时模式",manual:"手动模式"};
+const SD={on_compress:"每次 session 压缩时顺便做摘要，最省 token",interval:"对话进行中每 5 分钟自动整理一次",idle:"对话空闲时才做整理，最省钱",realtime:"每条消息都立即处理，最及时但最耗资源",manual:"仅在手动触发时才做摘要整理"};
+const pages={};
+
+pages.overview=async()=>{
+  const[d,svc]=await Promise.all([api("/api/status"),api("/api/services")]);
+  const sn=SN[d.strategy]||d.strategy;
+  let h=`<h1>概览</h1>`;
+  h+=`<h2 class="section-title">记忆概况</h2>`;
+  h+=`<div class="cards">`;
+  h+=`<div class="card"><div class="label">策略</div><div class="value"><span class="dot green"></span>${esc(sn)}</div></div>`;
+  h+=`<div class="card"><div class="label">模型模式</div><div class="value"><span class="dot blue"></span>${d.model_mode==="follow"?"跟随":"自定义"}</div><div class="sub">${esc(d.active_model)}</div></div>`;
+  h+=`<div class="card"><div class="label">索引条目</div><div class="value">${d.index_lines}</div><div class="sub">index.md</div></div>`;
+  h+=`<div class="card"><div class="label">摘要文件</div><div class="value">${d.summary_count}</div><div class="sub">${esc(d.memory_dir)}</div></div>`;
+  h+=`</div>`;
+  h+=`<h2 class="section-title">服务状态</h2>`;
+  h+=`<div class="svc-grid">`;
+  const restartable=["gateway","bot","vpn"];
+  for(const[k,v]of Object.entries(svc)){
+    const dot=v.running?"green pulse":"red";
+    const nm=esc(v.name);
+    let btn="";
+    if(!v.running&&restartable.includes(k)){
+      btn=`<button class="btn-sm" onclick="restartSvc('${k}')">重启</button>`;
+    }
+    h+=`<div class="svc-item"><div class="svc-left"><span class="dot ${dot}"></span><span class="svc-name">${nm}</span></div>${btn}</div>`;
+  }
+  h+=`</div>`;
+  h+=`<button id="reindexBtn" onclick="doReindex()">重建索引</button>`;
+  h+=`<div id="rmsg"></div>`;
+  app.innerHTML=h;
+};
+
+pages.index=async()=>{
+  const d=await api("/api/index?lines=100");
+  app.innerHTML=`<h1>索引 <span style="font-size:14px;color:#8b949e">(${d.total_lines} 行)</span></h1>`+
+  `<div class="search-box"><input id="sq" placeholder="搜索索引..." onkeydown="if(event.key==='Enter')doSearch()"><button onclick="doSearch()">搜索</button></div>`+
+  `<div id="sresult"></div>`+
+  `<div class="content-box" id="idxbox">${esc(d.content)}</div>`;
+};
+
+pages.summaries=async()=>{
+  const d=await api("/api/summaries");
+  let h=`<h1>摘要文件</h1><ul class="file-list">`;
+  for(const f of d.files){
+    h+=`<li onclick="viewSummary('${encodeURIComponent(f.name)}')"><span class="fname">${esc(f.name)}</span><span class="fmeta">${f.lines}行 · ${fmtSize(f.size)}</span></li>`;
+  }
+  h+=`</ul><div id="sview"></div>`;
+  app.innerHTML=h;
+};
+
+pages.model=async()=>{
+  const d=await api("/api/model/presets");
+  let h=`<h1>模型配置</h1>`;
+  h+=`<div style="margin-bottom:16px"><div class="form-row"><label>模式</label>`;
+  h+=`<select id="mmode" onchange="switchMode(this.value)" style="width:auto;padding:8px 14px">`;
+  h+=`<option value="follow" ${d.mode==="follow"?"selected":""}>跟随 iFlow</option>`;
+  h+=`<option value="custom" ${d.mode==="custom"?"selected":""}>自定义</option>`;
+  h+=`</select></div></div>`;
+  h+=`<h2 class="section-title">预设列表</h2>`;
+  for(const[k,v]of Object.entries(d.presets)){
+    const act=d.active===k&&d.mode==="custom"?` style="border-color:#58a6ff"`:"";
+    h+=`<div class="preset-card"${act}><div><div class="pname">${esc(k)}${d.active===k&&d.mode==="custom"?" ✓":""}</div><div class="pmodel">${esc(v.model||"未设置")}</div></div>`;
+    h+=`<div>${k!=="default"?`<button class="danger" onclick="delPreset('${esc(k)}')" style="padding:4px 12px;font-size:12px">删除</button>`:""}</div></div>`;
+  }
+  h+=`<div style="margin-top:16px;padding:18px;background:#161b22;border:1px solid #30363d;border-radius:8px">`;
+  h+=`<h2 class="section-title" style="margin-top:0">添加/更新预设</h2>`;
+  h+=`<div class="form-row"><label>名称</label><input id="pn" placeholder="my-model"></div>`;
+  h+=`<div class="form-row"><label>模型</label><input id="pm" placeholder="gpt-4o"></div>`;
+  h+=`<div class="form-row"><label>Base URL</label><input id="pu" placeholder="https://api.openai.com/v1"></div>`;
+  h+=`<div class="form-row"><label>API Key</label><input id="pk" type="password" placeholder="sk-..."></div>`;
+  h+=`<button onclick="savePreset()">保存预设</button></div><div id="pmsg"></div>`;
+  app.innerHTML=h;
+};
+
+pages.strategy=async()=>{
+  const d=await api("/api/status");
+  let h=`<h1>摘要策略</h1><div class="radio-group">`;
+  for(const[k,n]of Object.entries(SN)){
+    const sel=d.strategy===k?" selected":"";
+    const chk=d.strategy===k?" checked":"";
+    h+=`<label class="${sel}" onclick="setStrategy('${k}')"><input type="radio" name="st"${chk}><div><div class="rname">${esc(n)}</div><div class="rdesc">${esc(SD[k])}</div></div></label>`;
+  }
+  h+=`</div><div id="smsg"></div>`;
+  app.innerHTML=h;
+};
+
+pages.rules=async()=>{
+  const d=await api("/api/clean-rules");
+  let h=`<h1>清洗规则</h1>`;
+  h+=`<p style="color:#8b949e;margin-bottom:16px;font-size:14px">消息超过 ${d.truncate_length} 字符将被截断。以下规则用于过滤无意义的系统内容：</p>`;
+  for(const r of d.rules){
+    const badge=r.type==="regex"?"正则":"类型过滤";
+    h+=`<div class="rule-card">`;
+    h+=`<div class="rule-desc">${esc(r.description)}</div>`;
+    h+=`<span class="rule-badge">${badge}</span> `;
+    h+=`<span class="rule-toggle" onclick="togglePattern(this)">显示规则</span>`;
+    h+=`<div class="rule-pattern">${esc(r.pattern)}</div>`;
+    h+=`</div>`;
+  }
+  app.innerHTML=h;
+};
+
+function togglePattern(el){
+  const p=el.nextElementSibling;
+  if(p.style.display==="block"){p.style.display="none";el.textContent="显示规则";}
+  else{p.style.display="block";el.textContent="隐藏规则";}
+}
+
+async function doReindex(){
+  const btn=document.getElementById("reindexBtn");
+  if(btn){btn.disabled=true;btn.textContent="重建中...";}
+  const d=await post("/api/reindex",{});
+  if(btn){btn.disabled=false;btn.textContent="重建索引";}
+  document.getElementById("rmsg").innerHTML=msg(d.message||"完成",d.ok!==false);
+}
+async function restartSvc(name){
+  const d=await post("/api/services/restart/"+name,{});
+  alert(d.message||d.error||"已发送");
+  setTimeout(()=>pages.overview(),3000);
+}
+async function doSearch(){
+  const q=document.getElementById("sq").value.trim();
+  if(!q)return;
+  const d=await api("/api/index/search?q="+encodeURIComponent(q));
+  const el=document.getElementById("sresult");
+  if(!d.results.length){el.innerHTML=msg("未找到匹配项",false);return;}
+  let h=`<div style="margin-bottom:12px">`;
+  for(const r of d.results)h+=`<div style="padding:5px 0;font-size:14px;font-family:monospace"><span style="color:#8b949e">L${r.line}</span> ${esc(r.text)}</div>`;
+  h+=`</div>`;el.innerHTML=h;
+}
+async function viewSummary(name){
+  const d=await api("/api/summary/"+name+"?limit=200");
+  const sv=document.getElementById("sview");
+  sv.innerHTML=`<div style="margin-top:16px"><h2 class="section-title">${esc(d.filename)} (${d.total_lines} 行)</h2><div class="content-box">${esc(d.content)}</div></div>`;
+  sv.scrollIntoView({behavior:"smooth"});
+}
+async function switchMode(mode){await post("/api/model/mode",{mode});pages.model();}
+async function savePreset(){
+  const n=document.getElementById("pn").value.trim();
+  const m=document.getElementById("pm").value.trim();
+  const u=document.getElementById("pu").value.trim();
+  const k=document.getElementById("pk").value.trim();
+  if(!n){document.getElementById("pmsg").innerHTML=msg("请填写名称",false);return;}
+  await post("/api/model/preset",{name:n,model:m,base_url:u,api_key:k});
+  pages.model();
+}
+async function delPreset(name){
+  if(!confirm("确定删除预设 "+name+"？"))return;
+  await del("/api/model/preset/"+encodeURIComponent(name));
+  pages.model();
+}
+async function setStrategy(s){
+  await post("/api/strategy",{strategy:s});
+  pages.strategy();
+}
+
+// Navigation
+document.querySelectorAll(".sidebar a").forEach(a=>{
+  a.addEventListener("click",e=>{
+    e.preventDefault();
+    document.querySelectorAll(".sidebar a").forEach(x=>x.classList.remove("active"));
+    a.classList.add("active");
+    const pg=a.dataset.page;
+    if(pages[pg])pages[pg]();
+  });
+});
+pages.overview();
+</script>
+</body>
+</html>
