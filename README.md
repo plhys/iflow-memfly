@@ -324,6 +324,14 @@ python -m pytest tests/ -v
 
 ## Changelog
 
+### v1.3.2
+
+**项目正式定名**
+- 正式名称确定为 **iFlow MemFly**（中文：iFlow 记忆飞轮）
+- 项目定位更新为「记忆飞轮 — iFlow 的记忆觉醒项目」
+- 统一更新所有源码、Web UI、MCP server、CLI 中的显示名称
+- Python 包名 `iflow-memory`、配置目录 `~/.iflow-memory/` 保持不变，无需迁移
+
 ### v1.3.1
 
 **新功能**
