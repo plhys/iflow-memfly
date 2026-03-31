@@ -4,6 +4,20 @@
 
 > 1 进程，64MB 内存，Python 3.10+。
 
+---
+
+## 🚀 最简单的上手方式
+
+把这个仓库地址发给你的 AI 助手（iFlow CLI / Claude Code / Cursor 等），告诉它：
+
+> **"这是 iFlow MemFly 记忆飞轮项目，帮我部署这个项目并进行评测。"**
+>
+> 仓库地址：`https://github.com/plhys/iflow-memfly`
+
+AI 助手会自己 clone、安装、配置、启动。你只需要等它跑完就行。
+
+---
+
 ## 安装
 
 ```bash
