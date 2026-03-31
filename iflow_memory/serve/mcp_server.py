@@ -74,12 +74,20 @@ def _handle_tools_list(msg):
                 },
             },
         },
+        {
+            "name": "save_memory",
+            "description": "立即保存当前对话的记忆。当对话即将结束、或用户要求保存记忆时使用。会立即处理所有待处理的消息并更新 AGENTS.md。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
     ]
     return _make_response(msg["id"], {"tools": tools})
 
 
 @error_boundary
-def _handle_tool_call(msg, store: MemoryStore, memory_dir: Path, embedder: Embedder | None = None, loop: asyncio.AbstractEventLoop | None = None):
+def _handle_tool_call(msg, store: MemoryStore, memory_dir: Path, embedder: Embedder | None = None, loop: asyncio.AbstractEventLoop | None = None, *, web_port: int = 18765):
     params = msg.get("params", {})
     tool_name = params.get("name", "")
     args = params.get("arguments", {})
@@ -132,6 +140,27 @@ def _handle_tool_call(msg, store: MemoryStore, memory_dir: Path, embedder: Embed
             entries = [l.rstrip() for l in all_lines if l.startswith("- ")]
             recent = entries[:n]
             text = "\n".join(recent) if recent else "暂无对话索引"
+
+        return _make_response(msg["id"], {
+            "content": [{"type": "text", "text": text}],
+        })
+
+    elif tool_name == "save_memory":
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{web_port}/api/flush",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                data=b"{}",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+            flushed = result.get("flushed", 0)
+            injected = result.get("injected", 0)
+            text = f"记忆已保存。处理 {flushed} 个 session，更新 {injected} 个文件。"
+        except Exception as e:
+            text = f"保存失败（daemon 可能未运行）: {e}"
 
         return _make_response(msg["id"], {
             "content": [{"type": "text", "text": text}],
@@ -205,7 +234,7 @@ def main():
         elif method == "tools/list":
             resp = _handle_tools_list(msg)
         elif method == "tools/call":
-            resp = _handle_tool_call(msg, store, memory_dir, embedder, loop)
+            resp = _handle_tool_call(msg, store, memory_dir, embedder, loop, web_port=config.web_port)
         elif method == "ping":
             resp = _make_response(msg_id, {})
         elif msg_id is not None:

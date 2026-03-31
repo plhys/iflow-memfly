@@ -59,6 +59,9 @@ class MemoryConfig:
     embed_model: str = ""       # 模型名（onnx 默认 bge-small-en-v1.5，api 默认 text-embedding-ada-002）
     embed_dim: int = 0          # embedding 维度（0 = 不启用向量搜索）
 
+    # Web 服务端口
+    web_port: int = 18765
+
     # 注入目标
     agents_md_paths: list = field(default_factory=lambda: [
         str(Path.home() / ".iflow" / "AGENTS.md"),

@@ -18,7 +18,7 @@ logger = logging.getLogger("iflow-memory")
 VALID_CATEGORIES = frozenset({"identity", "preference", "entity", "event", "insight", "correction"})
 
 # Fuzzy dedup threshold — Jaccard similarity above this means duplicate
-_DEDUP_SIMILARITY_THRESHOLD = 0.85
+_DEDUP_SIMILARITY_THRESHOLD = 0.80
 
 
 def _normalize_text(text: str) -> str:
@@ -593,28 +593,28 @@ class MemoryStore:
 
             # 如果有 category 过滤，需要关联 memories 表
             if category:
-                filtered = []
+                active = []
                 for vr in vec_rows:
                     mem = self._conn.execute(
                         "SELECT id FROM memories WHERE id = ? AND category = ? AND archived = 0",
                         (vr[0], category),
                     ).fetchone()
                     if mem:
-                        filtered.append(vr)
-                vec_rows = filtered
+                        active.append(vr)
+                vec_rows = active
             else:
                 # 过滤已归档的
-                filtered = []
+                active = []
                 for vr in vec_rows:
                     mem = self._conn.execute(
                         "SELECT id FROM memories WHERE id = ? AND archived = 0",
                         (vr[0],),
                     ).fetchone()
                     if mem:
-                        filtered.append(vr)
-                vec_rows = filtered
+                        active.append(vr)
+                vec_rows = active
 
-            for rank, vr in enumerate(filtered, 1):
+            for rank, vr in enumerate(vec_rows, 1):
                 vec_ranks[vr[0]] = rank
 
         except Exception as e:
@@ -860,6 +860,7 @@ class MemoryStore:
         """Close database connection."""
         if self._conn:
             self._conn.close()
+            self._conn = None
             logger.info("MemoryStore closed")
 
     def __enter__(self):

@@ -6,6 +6,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,8 @@ class MemoryDaemon:
         )
         self._pending: dict[str, tuple[list[dict], Path, str, int]] = {}
         self._process_task: asyncio.Task | None = None
+        self._last_activity: dict[str, float] = {}  # session_key -> timestamp
+        self._idle_flushed: set[str] = set()  # 已 idle-flush 的 session
 
     async def start(self) -> None:
         """初始化守护进程：健康自检 + embedder 初始化。"""
@@ -88,6 +91,10 @@ class MemoryDaemon:
             if not new_msgs:
                 return
 
+            key = str(path)
+            self._last_activity[key] = time.time()
+            self._idle_flushed.discard(key)
+
             logger.info(f"New messages from {source}: {path.name} (+{len(new_msgs)})")
 
             if self.config.strategy == "on_compress":
@@ -100,17 +107,32 @@ class MemoryDaemon:
     async def interval_loop(self) -> None:
         """定时处理攒起来的消息。"""
         cycle = 0
+        idle_threshold = 60  # 秒
         while True:
             await asyncio.sleep(self.config.interval_seconds)
-            if self._pending:
+
+            # Idle flush: session 超过 60 秒无新消息，立即处理 pending
+            now = time.time()
+            idle_sessions = []
+            for key, last_ts in list(self._last_activity.items()):
+                if (now - last_ts >= idle_threshold
+                        and key in self._pending
+                        and key not in self._idle_flushed):
+                    idle_sessions.append(key)
+            if idle_sessions:
+                logger.info(f"[idle flush] {len(idle_sessions)} 个 session 已静默，立即处理")
+                self._idle_flushed.update(idle_sessions)
                 await self._flush_pending()
+            elif self._pending:
+                await self._flush_pending()
+
             cycle += 1
             if cycle % 10 == 0:
                 await self._maintenance()
 
     async def _maintenance(self) -> None:
         """周期性维护：归档冷记忆、检查手写区大小、生成对话回顾。"""
-        archived = self.store.archive_cold()
+        archived = self.store.archive_cold(min_age_days=5)
         if archived:
             logger.info(f"[维护] 归档 {archived} 条冷记忆")
             self.injector.inject()
@@ -164,6 +186,21 @@ class MemoryDaemon:
         for messages, session_path, source, total_count in batch.values():
             await self._process_messages(messages, session_path, source, total_count)
 
+    async def flush_now(self) -> dict:
+        """手动触发：立即处理所有 pending 消息并注入。
+
+        Returns:
+            dict with keys: flushed (int), injected (int)
+        """
+        pending_count = len(self._pending)
+        if pending_count > 0:
+            logger.info(f"[手动 flush] 处理 {pending_count} 个 pending session")
+            await self._flush_pending()
+        result = self.injector.inject()
+        injected = len(result.get("updated", []))
+        logger.info(f"[手动 flush] 完成，处理 {pending_count} 个 session，注入 {injected} 个文件")
+        return {"flushed": pending_count, "injected": injected}
+
     async def process_recent_sessions(self) -> None:
         """首次运行：处理最近活跃的 session 文件。"""
         all_files = []
@@ -210,7 +247,7 @@ class MemoryDaemon:
             try:
                 index_line = await self.summarizer.generate_index_line(messages)
                 if index_line:
-                    self.indexer.update_index(index_line, target_file, start_line)
+                    self.indexer.update_index(index_line, target_file, start_line, source=source)
                     logger.info(f"[L1 索引] {index_line[:60]}")
             except Exception as e:
                 logger.error(f"[记忆守护] L1 索引生成异常: {e}")

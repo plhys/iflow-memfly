@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iflow-memory"
-version = "1.3.0"
+version = "1.3.1"
 description = "记忆飞轮 — AI 的意识基础设施"
 license = {text = "GPL-3.0-or-later"}
 authors = [{name = "李不是狼"}]

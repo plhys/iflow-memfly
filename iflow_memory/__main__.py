@@ -181,7 +181,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             tasks.append(asyncio.create_task(daemon.interval_loop()))
 
         # 启动内嵌 Web + MCP 服务
-        web_port = getattr(config, "web_port", 18765)
+        web_port = config.web_port
         from .serve.web import create_app
         import uvicorn
         web_app = create_app(
@@ -189,6 +189,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             store=daemon.store,
             embedder=daemon.embedder,
         )
+        web_app.state.daemon = daemon
         uvi_config = uvicorn.Config(
             web_app, host="127.0.0.1", port=web_port,
             log_level="warning", access_log=False,

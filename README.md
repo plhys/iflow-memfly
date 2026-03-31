@@ -4,7 +4,7 @@
 
 iFlow Memory 提出并实现了「记忆飞轮」范式：记忆不是被检索的外部资源，而是在思考发生之前就已存在的认知状态。一个守护进程自动从对话中提取、分层、存储记忆，并在每次新会话启动时将其注入上下文 — AI 睁开眼睛的瞬间，就已经知道自己是谁、昨天做了什么、下一步该干什么。
 
-> 1 进程，2 线程，64MB 内存。46 个测试全部通过。4299 行代码。
+> 1 进程，2 线程，64MB 内存。46 个测试全部通过。4360 行代码。
 
 ## 为什么需要记忆飞轮
 
@@ -164,26 +164,26 @@ MemoryDaemon._on_session_change()
 目录结构本身体现了记忆生命周期：`core/`（产生）→ `store/`（存储）→ `serve/`（使用）。
 
 ```
-iflow_memory/                    4299 行
+iflow_memory/                    4360 行
 ├── __init__.py                  版本号
-├── __main__.py          529行   CLI 入口 + 守护进程启动
-├── config.py            146行   配置管理
+├── __main__.py          530行   CLI 入口 + 守护进程启动
+├── config.py            149行   配置管理
 ├── guard.py             102行   健康检查 + 错误边界
 │
 ├── core/                        记忆的产生
-│   ├── daemon.py        311行   守护进程主循环 + 消息管道
-│   ├── watcher.py        89行   文件变更监听
-│   ├── indexer.py       303行   L1/L3 索引写入
-│   └── summarizer.py    539行   LLM 摘要生成（7 个 prompt）
+│   ├── daemon.py        348行   守护进程主循环 + 消息管道
+│   ├── watcher.py        96行   文件变更监听
+│   ├── indexer.py       305行   L1/L3 索引写入
+│   └── summarizer.py    547行   LLM 摘要生成（7 个 prompt）
 │
 ├── store/                       记忆的存储
-│   ├── db.py            869行   SQLite + FTS5 + sqlite-vec
+│   ├── db.py            870行   SQLite + FTS5 + sqlite-vec
 │   └── embed.py         184行   向量嵌入客户端
 │
 └── serve/                       记忆的使用
-    ├── injector.py      412行   AGENTS.md 注入器
-    ├── mcp_server.py    229行   MCP stdio 接口
-    ├── web.py           580行   Web 管理 + MCP HTTP
+    ├── injector.py      446行   AGENTS.md 注入器
+    ├── mcp_server.py    258行   MCP stdio 接口
+    ├── web.py           519行   Web 管理 + MCP HTTP
     └── ui.html                  前端页面
 ```
 
@@ -323,6 +323,28 @@ python -m pytest tests/ -v
 - JSON 解析容错（代码块、尾逗号、截断修复、正则兜底）
 
 ## Changelog
+
+### v1.3.1
+
+**新功能**
+- `web_port` 可在配置文件中自定义（默认 18765），不再硬编码
+- 对话空闲 60 秒自动 flush pending 消息，防止对话结束后记忆丢失
+- 新增 `save_memory` MCP tool 和 `POST /api/flush` Web API，支持手动触发记忆保存
+
+**Bug 修复**
+- 修复 features API 缺少 `state_snapshot`，导致无法通过 Web 开关状态快照
+- 修复 `_call_llm` 中 API 返回非标准格式（KeyError/IndexError）不会重试的问题
+- 修复 `MemoryStore.close()` 不幂等，重复调用会抛异常
+- 修复状态快照生成时 LLM 返回 list 类型字段导致 `'list' object has no attribute 'strip'` 崩溃
+- 修复 Watcher 因符号链接导致同一 session 文件被双重处理
+- 修复注入模板中 `/tmp` 路径硬编码，改为 `tempfile.gettempdir()` 动态获取
+
+**改进**
+- `import time` 移至文件顶部，消除函数内重复导入
+- `hybrid_search` 中变量命名统一，提升可读性
+- 分类记忆提取 prompt 优化：insight 要求包含因果关系，过滤口头语和操作碎片
+- 最短记忆长度阈值从 4 提升到 12，减少垃圾记忆
+- Jaccard 去重阈值从 0.85 降到 0.80，更积极清理近似重复
 
 ### v1.3.0
 

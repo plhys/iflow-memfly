@@ -232,12 +232,14 @@ class Indexer:
         summary: str,
         target_file: Path,
         line_number: int,
+        source: str = "",
     ) -> None:
         """更新 index.md 索引文件。新条目插入到对应日期段的最前面。"""
         today = datetime.now().strftime("%Y-%m-%d")
         ts = datetime.now().strftime("%H:%M")
         rel_path = target_file.name
-        entry = f"- {ts} {summary} → {rel_path}:{line_number}\n"
+        tag = f" [{source}]" if source else ""
+        entry = f"- {ts} {summary} → {rel_path}:{line_number}{tag}\n"
 
         if not self.index_file.exists():
             with open(self.index_file, "w", encoding="utf-8") as f:

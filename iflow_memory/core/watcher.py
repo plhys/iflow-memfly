@@ -57,15 +57,22 @@ class SessionWatcher:
                 pass
 
     def _iter_session_files(self):
-        """遍历所有 session 文件。"""
+        """遍历所有 session 文件（符号链接去重）。"""
+        seen: set[str] = set()
         # ACP sessions: *.json
         if self.acp_dir.exists():
             for f in self.acp_dir.glob("*.json"):
-                yield f
+                real = str(f.resolve())
+                if real not in seen:
+                    seen.add(real)
+                    yield f
         # CLI sessions: session-*.jsonl (遍历所有工作目录子目录)
         if self.cli_dir.exists():
             for f in self.cli_dir.glob("*/session-*.jsonl"):
-                yield f
+                real = str(f.resolve())
+                if real not in seen:
+                    seen.add(real)
+                    yield f
 
     async def _poll(self) -> None:
         """检查文件变化。"""

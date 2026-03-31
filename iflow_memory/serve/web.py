@@ -69,6 +69,15 @@ def create_app(
             return html_path.read_text(encoding="utf-8")
         return "<h1>ui.html not found</h1>"
 
+    @app.post("/api/flush")
+    async def flush_memory():
+        """立即处理所有 pending 消息并更新 AGENTS.md。"""
+        daemon = getattr(app.state, "daemon", None)
+        if not daemon:
+            return JSONResponse({"error": "daemon 未连接"}, status_code=503)
+        result = await daemon.flush_now()
+        return JSONResponse(result)
+
     @app.get("/api/status")
     async def status():
         _reload()
@@ -303,7 +312,7 @@ def create_app(
         """更新功能开关。body: {"key": "atmosphere", "enabled": false}"""
         key = body.get("key")
         enabled = body.get("enabled")
-        valid_keys = {"index_line", "summary", "classify", "atmosphere", "daily_recap", "vector_search"}
+        valid_keys = {"index_line", "summary", "classify", "atmosphere", "state_snapshot", "daily_recap", "vector_search"}
         if key not in valid_keys:
             return JSONResponse({"error": f"未知功能: {key}"}, 400)
         if not isinstance(enabled, bool):

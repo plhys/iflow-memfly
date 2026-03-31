@@ -10,6 +10,7 @@ cleanly replaced on subsequent runs without touching hand-written content.
 
 import logging
 import re
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,8 @@ from pathlib import Path
 from ..store.db import MemoryStore
 
 logger = logging.getLogger("iflow-memory")
+
+_tmp_dir = tempfile.gettempdir()
 
 # Heading that marks the start of the auto-generated section
 SECTION_MARKER = "### 记忆系统（自动生成，勿手动编辑）"
@@ -65,15 +68,14 @@ class MemoryInjector:
                 "updated": list of path strings that were successfully updated
                 "memories_count": number of memories included in the section
         """
-        section = self._build_memory_section()
-
-        # Count actual memories (non-empty bullet lines)
-        memories_count = sum(
-            1 for line in section.splitlines() if line.startswith("- ")
-        )
-
         updated: list[str] = []
+        memories_count = 0
         for path in self.agents_md_paths:
+            channel = self._channel_for_path(path)
+            section = self._build_memory_section(channel_filter=channel)
+            memories_count = max(memories_count, sum(
+                1 for line in section.splitlines() if line.startswith("- ")
+            ))
             if self._update_agents_md(path, section):
                 updated.append(str(path))
 
@@ -84,7 +86,22 @@ class MemoryInjector:
         )
         return result
 
-    def _build_memory_section(self) -> str:
+    @staticmethod
+    def _channel_for_path(path: Path) -> str:
+        """Determine channel filter based on AGENTS.md path.
+
+        - Paths under .iflow-bot/ → "acp" (feishu gateway)
+        - Paths under .iflow/ (CLI) → "cli"
+        - Otherwise → "" (no filter)
+        """
+        parts = str(path)
+        if ".iflow-bot" in parts:
+            return "acp"
+        elif "/.iflow/" in parts or parts.endswith("/.iflow/AGENTS.md"):
+            return "cli"
+        return ""
+
+    def _build_memory_section(self, channel_filter: str = "") -> str:
         """Build the memory section text from store.get_top_memories().
 
         Returns a markdown string starting with the SECTION_MARKER heading,
@@ -110,7 +127,7 @@ class MemoryInjector:
         lines.append("> **开机自检指令**：新 session 启动时，在首次回复前执行以下步骤：")
         lines.append("> 1. 运行 `ps aux | grep 'iflow_memory start' | grep -v grep && echo 'daemon=OK' || echo 'daemon=DOWN'` 检查 daemon 进程")
         lines.append("> 2. 用 `search_memory` 搜索一个关键词（如「最近对话」），确认向量搜索可用")
-        lines.append("> 3. 如果 daemon=DOWN，运行 `nohup python3 -m iflow_memory start > /tmp/iflow-memory.log 2>&1 &` 恢复")
+        lines.append(f"> 3. 如果 daemon=DOWN，运行 `nohup python3 -m iflow_memory start > {_tmp_dir}/iflow-memory.log 2>&1 &` 恢复")
         lines.append("> 4. 如果 search_memory 返回空或报错，检查 embedding API 和 sqlite-vec 状态")
         lines.append("> 5. 自检通过后，用 `search_memory` 检索最近对话的关键上下文，接续之前的工作")
         lines.append("> 不要等用户提醒，不要跳过自检。")
@@ -123,7 +140,7 @@ class MemoryInjector:
             lines.append("")
 
         # Recent conversation context from index.md
-        recent = self._get_recent_index(50)
+        recent = self._get_recent_index(50, channel_filter=channel_filter)
         if recent:
             lines.append("**最近对话**")
             for entry in recent:
@@ -221,11 +238,16 @@ class MemoryInjector:
 
         return "\n".join(lines)
 
-    def _get_recent_index(self, count: int = 3) -> list[str]:
+    def _get_recent_index(self, count: int = 3, channel_filter: str = "") -> list[str]:
         """Read the most recent L1 index entries from index.md.
 
         Returns a list of entry strings. Date headings (## YYYY-MM-DD) are
         preserved as-is so cross-day entries are visually separated.
+
+        Args:
+            count: max number of entries to return.
+            channel_filter: if set ("cli" or "acp"), only return entries
+                matching that tag. Entries without a tag are included for all.
         """
         # Locate index.md via store's db_path parent (= memory_dir)
         memory_dir = self.store.db_path.parent
@@ -242,7 +264,19 @@ class MemoryInjector:
                         # Date heading — include it but don't count toward limit
                         raw_lines.append(stripped)
                     elif stripped.startswith("- "):
-                        raw_lines.append(stripped.lstrip("- "))
+                        # Check channel tag filter
+                        if channel_filter:
+                            has_own_tag = stripped.endswith(f"[{channel_filter}]")
+                            has_no_tag = not stripped.endswith("[cli]") and not stripped.endswith("[acp]")
+                            if not has_own_tag and not has_no_tag:
+                                continue
+                        # Strip the channel tag before output
+                        display = stripped.lstrip("- ")
+                        for tag in (" [cli]", " [acp]"):
+                            if display.endswith(tag):
+                                display = display[: -len(tag)]
+                                break
+                        raw_lines.append(display)
                         entry_count += 1
                         if entry_count >= count:
                             break
