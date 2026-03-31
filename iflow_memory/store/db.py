@@ -165,6 +165,7 @@ class MemoryStore:
     def _migrate(self) -> None:
         """Run schema creation and incremental migrations based on user_version."""
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        is_fresh = version < 1
 
         if version < 1:
             self._migrate_v1()
@@ -176,6 +177,9 @@ class MemoryStore:
             self._migrate_v4()
 
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+        if is_fresh:
+            self._seed_memories()
 
     def _migrate_v1(self) -> None:
         """Initial schema: memories table + FTS5 virtual table + sync triggers."""
@@ -296,6 +300,31 @@ class MemoryStore:
                 ON state_snapshots(session_id);
         """)
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Seed memories (pre-installed lessons for new users)
+    # ------------------------------------------------------------------
+
+    _SEED_MEMORIES: list[tuple[str, str]] = [
+        ("insight", "iFlow CLI 的 sub-agent（task tool）使用 write_file 写工作区外的文件会被拒绝，之后 shell 命令可能陷入死循环空转。操作工作区外的文件时，应在主对话中直接用 shell 命令写，不要走 sub-agent。"),
+        ("insight", "iFlow CLI 上下文压缩（lightweightCompress）会物理删除 session 文件中的旧消息并重写文件。如果外部系统用消息计数追踪进度，文件重写后计数会错位，导致后续新消息永远读不到。"),
+        ("insight", "iFlow CLI 的 session 文件不是只追加的——每次压缩或保存都会完整重写。依赖文件偏移量或行数做增量处理的方案都不可靠，应使用内容哈希做去重。"),
+        ("insight", "iFlow CLI 的 COMPRESSION_RANGE=0.5，每次压缩移除约 50% 的消息。经过多轮压缩后上下文仍可能溢出，此时最近的对话会被丢弃。"),
+        ("insight", "save_memory 工具保存的记忆需要等 daemon 下一轮处理才会注入到 AGENTS.md。如果保存后立即开新 session，新 session 可能还看不到刚保存的记忆。"),
+        ("insight", "AGENTS.md 注入的内容有长度限制。如果记忆条目过多，injector 会按优先级截断。关键信息应保持简短，避免写入大段文本。"),
+    ]
+
+    def _seed_memories(self) -> None:
+        """Write pre-installed lessons into a fresh database."""
+        count = 0
+        for category, text in self._SEED_MEMORIES:
+            try:
+                self.add(category, text, source_session="seed")
+                count += 1
+            except (ValueError, Exception) as e:
+                logger.warning(f"Failed to seed memory: {e}")
+        if count:
+            logger.info(f"Seeded {count} pre-installed memories")
 
     # ------------------------------------------------------------------
     # State snapshot operations

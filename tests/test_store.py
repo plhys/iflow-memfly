@@ -152,16 +152,21 @@ class TestMemoryStoreCRUD:
         assert count == 0  # identity 不应被归档
 
     def test_stats(self, store):
-        """stats 应返回正确的统计。"""
+        """stats 应返回正确的统计（考虑种子记忆基线）。"""
+        baseline = store.stats()
+        base_total = baseline["total"]
+        base_entity = baseline["by_category"].get("entity", 0)
+        base_insight = baseline["by_category"].get("insight", 0)
+
         store.add("entity", "test entity one")
         store.add("entity", "test entity two")
         store.add("insight", "test insight")
 
         s = store.stats()
-        assert s["total"] == 3
+        assert s["total"] == base_total + 3
         assert s["archived"] == 0
-        assert s["by_category"]["entity"] == 2
-        assert s["by_category"]["insight"] == 1
+        assert s["by_category"]["entity"] == base_entity + 2
+        assert s["by_category"]["insight"] == base_insight + 1
 
     def test_checkpoint(self, store):
         """checkpoint 不应崩溃。"""
