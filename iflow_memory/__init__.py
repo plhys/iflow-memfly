@@ -1,3 +1,3 @@
-"""iFlow Memory — 记忆飞轮，AI 的意识基础设施。"""
+"""iFlow MemFly — 记忆飞轮，iFlow 的记忆觉醒项目。"""
 
 __version__ = "1.3.1"

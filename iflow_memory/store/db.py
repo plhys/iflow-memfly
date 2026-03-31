@@ -1,6 +1,6 @@
 """MemoryStore — SQLite + FTS5 storage layer for classified memories.
 
-Provides persistent storage with full-text search for the iflow-memory system.
+Provides persistent storage with full-text search for the iFlow MemFly system.
 Schema uses WAL mode for concurrent reads and FTS5 triggers for index consistency.
 """
 

@@ -1,4 +1,4 @@
-"""iFlow Memory Web UI — FastAPI backend + HTML frontend."""
+"""iFlow MemFly Web UI — FastAPI backend + HTML frontend."""
 
 import json
 import logging
@@ -41,7 +41,7 @@ def create_app(
 ) -> FastAPI:
     cfg_path = Path(config_path) if config_path else DEFAULT_CONFIG_FILE
     config = load_config(cfg_path)
-    app = FastAPI(title="iFlow Memory")
+    app = FastAPI(title="iFlow MemFly")
 
     # 保存 store/embedder 引用供 MCP 端点使用
     app.state.memory_store = store
@@ -253,7 +253,7 @@ def create_app(
             )
 
         # 写入新索引
-        content = "# iFlow Memory Index\n"
+        content = "# iFlow MemFly Index\n"
         for date in sorted(entries_by_date.keys(), reverse=True):
             content += f"\n## {date}\n"
             for entry in entries_by_date[date]:
@@ -327,7 +327,7 @@ def create_app(
         {
             "name": "search_memory",
             "description": (
-                "搜索 iFlow Memory 记忆库。可按关键词搜索历史对话中提取的记忆"
+                "搜索 iFlow MemFly 记忆库。可按关键词搜索历史对话中提取的记忆"
                 "（身份、偏好、知识、事件、经验、纠正）。"
                 "当 AGENTS.md 中的记忆不够用、或需要查找更早的历史信息时使用。"
             ),
@@ -446,7 +446,7 @@ def create_app(
                 resp = _mcp_response(msg_id, {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "iflow-memory", "version": __version__},
+                    "serverInfo": {"name": "iflow-memfly", "version": __version__},
                 })
                 responses.append(resp)
 

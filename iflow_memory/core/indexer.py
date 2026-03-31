@@ -243,7 +243,7 @@ class Indexer:
 
         if not self.index_file.exists():
             with open(self.index_file, "w", encoding="utf-8") as f:
-                f.write(f"# iFlow Memory Index\n\n## {today}\n{entry}")
+                f.write(f"# iFlow MemFly Index\n\n## {today}\n{entry}")
             return
 
         with open(self.index_file, "r", encoding="utf-8") as f:

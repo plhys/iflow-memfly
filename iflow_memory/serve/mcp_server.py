@@ -1,4 +1,4 @@
-"""MCP stdio server for iflow-memory — exposes memory search as tools.
+"""MCP stdio server for iFlow MemFly — exposes memory search as tools.
 
 Implements the Model Context Protocol (JSON-RPC over stdin/stdout) with
 two tools: search_memory and get_recent_context.
@@ -31,7 +31,7 @@ def _handle_initialize(msg):
     return _make_response(msg["id"], {
         "protocolVersion": "2024-11-05",
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "iflow-memory", "version": __version__},
+        "serverInfo": {"name": "iflow-memfly", "version": __version__},
     })
 
 
@@ -39,7 +39,7 @@ def _handle_tools_list(msg):
     tools = [
         {
             "name": "search_memory",
-            "description": "搜索 iFlow Memory 记忆库。可按关键词搜索历史对话中提取的记忆（身份、偏好、知识、事件、经验、纠正）。当 AGENTS.md 中的记忆不够用、或需要查找更早的历史信息时使用。",
+            "description": "搜索 iFlow MemFly 记忆库。可按关键词搜索历史对话中提取的记忆（身份、偏好、知识、事件、经验、纠正）。当 AGENTS.md 中的记忆不够用、或需要查找更早的历史信息时使用。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

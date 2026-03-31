@@ -1,4 +1,4 @@
-"""iFlow Memory configuration management."""
+"""iFlow MemFly configuration management."""
 
 import json
 import logging

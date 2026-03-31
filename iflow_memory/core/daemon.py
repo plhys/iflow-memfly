@@ -70,7 +70,7 @@ class MemoryDaemon:
             logger.info("[深度回忆] 向量搜索已关闭")
 
         from .. import __version__
-        logger.info(f"iFlow Memory v{__version__} ready")
+        logger.info(f"iFlow MemFly v{__version__} ready")
 
     async def stop(self) -> None:
         """停止守护进程。"""
@@ -81,7 +81,7 @@ class MemoryDaemon:
         await self.summarizer.close()
         if self.embedder:
             await self.embedder.close()
-        logger.info("iFlow Memory stopped")
+        logger.info("iFlow MemFly stopped")
 
     async def _on_session_change(self, path: Path, meta: dict) -> None:
         """session 文件变化回调。"""

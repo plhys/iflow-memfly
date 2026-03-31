@@ -1,4 +1,4 @@
-"""iFlow Memory CLI entry point.
+"""iFlow MemFly CLI entry point.
 
 Thin CLI layer that delegates to core/, store/, serve/ subpackages.
 """
@@ -35,7 +35,7 @@ def setup_logging(verbose: bool = False) -> None:
 def _first_run_setup(config_path) -> None:
     """首次安装引导：提示用户选择开启哪些功能。"""
     print("\n╭─────────────────────────────────────╮")
-    print("│   iFlow Memory 首次安装配置向导     │")
+    print("│   iFlow MemFly 首次安装配置向导     │")
     print("╰─────────────────────────────────────╯\n")
     print("以下功能需要调用 LLM，会消耗 token。")
     print("你可以根据 token 预算选择开启哪些功能。\n")
@@ -197,7 +197,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         uvi_server = uvicorn.Server(uvi_config)
         tasks.append(asyncio.create_task(uvi_server.serve()))
 
-        logger.info(f"iFlow Memory v{__version__} starting, strategy={config.strategy}")
+        logger.info(f"iFlow MemFly v{__version__} starting, strategy={config.strategy}")
         logger.info(f"Memory dir: {config.memory_dir}")
         logger.info(f"Model mode: {config.model_mode}")
         logger.info(f"MCP endpoint: http://127.0.0.1:{web_port}/mcp")
@@ -273,7 +273,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     memory_dir = Path(config.memory_dir)
     index_file = memory_dir / "index.md"
 
-    print("iFlow Memory 状态")
+    print("iFlow MemFly 状态")
     print(f"  记忆目录: {config.memory_dir}")
     print(f"  策略: {config.strategy}")
     print(f"  模型模式: {config.model_mode}")
@@ -305,7 +305,7 @@ def cmd_web(args: argparse.Namespace) -> None:
     from .serve.web import create_app
     config_path = str(args.config) if args.config else None
     app = create_app(config_path)
-    print(f"iFlow Memory Web UI: http://{args.host}:{args.port}")
+    print(f"iFlow MemFly Web UI: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
@@ -342,7 +342,7 @@ def cmd_features(args: argparse.Namespace) -> None:
     config = load_config(args.config)
 
     if not args.features_action or args.features_action == "list":
-        print("iFlow Memory 功能开关\n")
+        print("iFlow MemFly 功能开关\n")
         print(f"  {'功能':<16} {'状态':<6} {'token消耗':<8} 说明")
         print(f"  {'─'*16} {'─'*6} {'─'*8} {'─'*30}")
         for key, (name, cost, desc) in FEATURE_INFO.items():
@@ -450,7 +450,7 @@ def cmd_query(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="iflow-memory",
-        description="iFlow Memory — 自动对话记忆索引服务",
+        description="iFlow MemFly — 记忆飞轮，iFlow 的记忆觉醒项目",
     )
     parser.add_argument(
         "--config", type=Path, default=None,
