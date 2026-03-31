@@ -1,8 +1,10 @@
 """Indexer — cleans raw session data and generates memory index."""
 
+import hashlib
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -107,6 +109,8 @@ class SessionParser:
 class Indexer:
     """管理记忆索引文件。"""
 
+    SHADOW_RETAIN_SECONDS = 6 * 3600  # 影子记录保留 6 小时
+
     def __init__(self, memory_dir: Path, store=None):
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -115,6 +119,9 @@ class Indexer:
         # 增量状态：记录每个 session 文件已处理到第几条消息
         self._state_file = self.memory_dir / ".indexer-state.json"
         self._state: dict = self._load_state()
+        # 影子记录目录
+        self._shadow_dir = self.memory_dir / ".shadow"
+        self._shadow_dir.mkdir(exist_ok=True)
 
     def _load_state(self) -> dict:
         if self._state_file.exists():
@@ -123,7 +130,7 @@ class Indexer:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
                 pass
-        return {"processed": {}}
+        return {"processed": {}, "shadow_committed": {}}
 
     def _save_state(self) -> None:
         with open(self._state_file, "w") as f:
@@ -131,6 +138,10 @@ class Indexer:
 
     def get_new_messages(self, path: Path, source: str) -> tuple[list[dict], int]:
         """获取 session 文件中未处理的新消息（不推进状态）。
+
+        内置影子记录机制：
+        - 每次读到新消息，同步写入影子文件（滚动保留 6 小时）
+        - 检测到文件被重写（total < processed）时，从影子文件恢复丢失消息
 
         Returns:
             (new_messages, total_count) — 新消息列表和文件中的总消息数。
@@ -142,8 +153,38 @@ class Indexer:
         else:
             all_msgs = SessionParser.parse_cli(path)
 
+        total_count = len(all_msgs)
         processed_count = self._state["processed"].get(key, 0)
-        return all_msgs[processed_count:], len(all_msgs)
+
+        if total_count >= processed_count:
+            # --- 正常路径：文件只增不减 ---
+            new_msgs = all_msgs[processed_count:]
+            if new_msgs:
+                self._shadow_append(key, new_msgs)
+                self._shadow_cleanup(key)
+                # 记录已处理消息的哈希，供恢复时去重
+                committed = self._state.setdefault("shadow_committed", {}).setdefault(key, [])
+                for m in new_msgs:
+                    committed.append(self._msg_hash(m))
+                # 只保留最近 500 个哈希，防止无限膨胀
+                if len(committed) > 500:
+                    self._state["shadow_committed"][key] = committed[-500:]
+            return new_msgs, total_count
+        else:
+            # --- 异常路径：文件被重写，消息数变少（压缩/爆掉） ---
+            logger.warning(
+                f"Session file shrunk: {path.name} "
+                f"(was {processed_count}, now {total_count}). "
+                f"Attempting shadow recovery."
+            )
+            recovered = self._shadow_recover(key, all_msgs)
+            if recovered:
+                logger.info(
+                    f"Shadow recovery: found {len(recovered)} lost messages "
+                    f"for {path.name}"
+                )
+            # 重置计数到当前文件长度，后续正常追踪
+            return recovered, total_count
 
     def commit_progress(self, path: Path, total_count: int) -> None:
         """推进指定 session 文件的处理进度。
@@ -154,6 +195,105 @@ class Indexer:
         """
         self._state["processed"][str(path)] = total_count
         self._save_state()
+
+    # ---- 影子记录（Shadow Record）内部方法 ----
+
+    def _shadow_path(self, key: str) -> Path:
+        """根据 session 文件路径生成对应的影子文件路径。"""
+        name_hash = hashlib.md5(key.encode()).hexdigest()[:12]
+        return self._shadow_dir / f"{name_hash}.jsonl"
+
+    @staticmethod
+    def _msg_hash(msg: dict) -> str:
+        """计算消息的内容哈希（role + text 前 200 字符）。"""
+        raw = f"{msg.get('role', '')}:{msg.get('text', '')[:200]}"
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def _shadow_append(self, key: str, messages: list[dict]) -> None:
+        """将新消息追加写入影子文件，每条带时间戳和哈希。"""
+        shadow_file = self._shadow_path(key)
+        now = time.time()
+        try:
+            with open(shadow_file, "a", encoding="utf-8") as f:
+                for msg in messages:
+                    record = {
+                        "ts": now,
+                        "hash": self._msg_hash(msg),
+                        "role": msg["role"],
+                        "text": msg["text"],
+                    }
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning(f"Shadow append failed for {key}: {e}")
+
+    def _shadow_cleanup(self, key: str) -> None:
+        """清理影子文件中超过保留时间的旧记录。"""
+        shadow_file = self._shadow_path(key)
+        if not shadow_file.exists():
+            return
+        cutoff = time.time() - self.SHADOW_RETAIN_SECONDS
+        try:
+            kept = []
+            with open(shadow_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if rec.get("ts", 0) >= cutoff:
+                        kept.append(line)
+            with open(shadow_file, "w", encoding="utf-8") as f:
+                for line in kept:
+                    f.write(line + "\n")
+        except OSError as e:
+            logger.warning(f"Shadow cleanup failed for {key}: {e}")
+
+    def _shadow_recover(self, key: str, current_msgs: list[dict]) -> list[dict]:
+        """从影子文件中恢复当前 session 文件中已丢失的消息。
+
+        对比影子记录和当前文件内容的哈希，排除已处理过的消息，
+        只返回真正丢失且未被处理的部分。
+        """
+        shadow_file = self._shadow_path(key)
+        if not shadow_file.exists():
+            logger.warning(f"No shadow file for recovery: {key}")
+            return []
+
+        # 当前文件中所有消息的哈希集合
+        current_hashes = {self._msg_hash(m) for m in current_msgs}
+        # 之前已成功处理过的消息哈希集合
+        committed_hashes = set(
+            self._state.get("shadow_committed", {}).get(key, [])
+        )
+        skip_hashes = current_hashes | committed_hashes
+
+        recovered = []
+        seen = set()  # 影子文件内部去重
+        try:
+            with open(shadow_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    h = rec.get("hash")
+                    if h not in skip_hashes and h not in seen:
+                        seen.add(h)
+                        recovered.append({
+                            "role": rec["role"],
+                            "text": rec["text"],
+                        })
+        except OSError as e:
+            logger.warning(f"Shadow recovery read failed for {key}: {e}")
+            return []
+
+        return recovered
 
     def write_classified_memories(
         self, memories: list[dict], session_path: Path
