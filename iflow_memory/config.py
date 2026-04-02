@@ -51,6 +51,7 @@ class MemoryConfig:
         "vector_search": True,
         "knowledge_graph": True,
         "daily_briefing": True,
+        "llm_dream": False,  # LLM 深度记忆整合（子代理做梦），默认关闭
     })
 
     # 深度回忆 — embedding 配置

@@ -142,12 +142,18 @@ class MemoryDaemon:
             self.injector.inject()
 
         # 做梦整合：合并高度相似的记忆，减少冗余
-        # 灵感来源：Claude Code autoDream，但我们不用 LLM，
-        # 直接用 Jaccard 相似度在数据库层面做去重归并。
-        consolidated = self._dream_consolidate()
-        if consolidated:
-            logger.info(f"[做梦整合] 合并 {consolidated} 组重复记忆")
-            self.injector.inject()
+        # 灵感来源：Claude Code autoDream
+        # 两种模式：Jaccard 快速去重（默认）或 LLM 深度整合（开关控制）
+        if self.config.features.get("llm_dream", False):
+            consolidated = await self._dream_consolidate_llm()
+            if consolidated:
+                logger.info(f"[做梦整合·LLM] 执行 {consolidated} 个整合动作")
+                self.injector.inject()
+        else:
+            consolidated = self._dream_consolidate()
+            if consolidated:
+                logger.info(f"[做梦整合] 合并 {consolidated} 组重复记忆")
+                self.injector.inject()
 
         for md_path in self.injector.agents_md_paths:
             try:
@@ -227,6 +233,80 @@ class MemoryDaemon:
                 self.store.archive_by_ids(list(merged_ids))
 
         return consolidated
+
+    async def _dream_consolidate_llm(self) -> int:
+        """LLM 深度记忆整合：用 LLM 分析同类别记忆，执行合并/归档/升级。
+
+        比 Jaccard 更智能：能理解语义相似性（如"深色主题"="暗色模式"），
+        能识别过时记忆（旧版本号 vs 新版本号），能合并碎片为完整描述。
+
+        代价：每个类别消耗约 2000-5000 token，总计约 1-3 万 token。
+        因此默认关闭，由用户主动开启。
+        """
+        total_actions = 0
+
+        for category in ("identity", "preference", "entity", "event", "insight", "correction"):
+            rows = self.store.get_by_category(category, limit=200)
+            if len(rows) < 2:
+                continue
+
+            try:
+                actions = await self.summarizer.consolidate_memories(category, rows)
+            except Exception as e:
+                logger.error(f"[做梦整合·LLM] {category} 整合异常: {e}")
+                continue
+
+            if not actions:
+                continue
+
+            # 执行 actions
+            all_discard_ids: list[int] = []
+            for action in actions:
+                action_type = action["type"]
+                discard_ids = action["discard_ids"]
+                reason = action.get("reason", "")
+
+                if action_type == "merge":
+                    keep_id = action["keep_id"]
+                    logger.info(
+                        f"[做梦整合·LLM] {category} 合并: "
+                        f"保留 #{keep_id}, 归档 {discard_ids} — {reason}"
+                    )
+                    all_discard_ids.extend(discard_ids)
+
+                elif action_type == "obsolete":
+                    logger.info(
+                        f"[做梦整合·LLM] {category} 过时: "
+                        f"归档 {discard_ids} — {reason}"
+                    )
+                    all_discard_ids.extend(discard_ids)
+
+                elif action_type == "upgrade":
+                    new_text = action["new_text"]
+                    logger.info(
+                        f"[做梦整合·LLM] {category} 升级: "
+                        f"归档 {discard_ids}, 新建 '{new_text[:60]}' — {reason}"
+                    )
+                    # 先写入新记忆，再归档旧的
+                    try:
+                        self.store.add(
+                            category=category,
+                            text=new_text,
+                            source_session="dream_consolidate",
+                        )
+                    except Exception as e:
+                        logger.error(f"[做梦整合·LLM] 新记忆写入失败: {e}")
+                        continue
+                    all_discard_ids.extend(discard_ids)
+
+                total_actions += 1
+
+            # 批量归档
+            if all_discard_ids:
+                archived = self.store.archive_by_ids(all_discard_ids)
+                logger.info(f"[做梦整合·LLM] {category}: 归档 {archived} 条记忆")
+
+        return total_actions
 
     async def _generate_missing_recap(self) -> None:
         """生成最近缺失的对话回顾。"""
