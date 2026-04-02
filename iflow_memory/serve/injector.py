@@ -235,10 +235,10 @@ class MemoryInjector:
         for mem in memories:
             grouped[mem["category"]].append(mem["text"])
 
-        # 按记忆 ID 建立索引，方便查 age_days 和 via_graph
+        # 按记忆文本建立索引，方便查 age_days 和 via_graph
         mem_index: dict[str, dict] = {}
         for mem in memories:
-            mem_index[mem["text"]] = mem
+            mem_index.setdefault(mem["text"], mem)
 
         # Emit each category in display order, skipping empty ones
         for cat_key, cat_name in CATEGORY_DISPLAY:
@@ -328,7 +328,7 @@ class MemoryInjector:
                             current_date_is_old = False
                         raw_lines.append(stripped)
                     elif stripped.startswith("- "):
-                        # 微压缩：旧日期的条目跳过
+                        # 微压缩：旧日期的条目跳过（但如果新日期没有内容，后面会补）
                         if current_date_is_old:
                             continue
                         # Check channel tag filter
@@ -348,6 +348,47 @@ class MemoryInjector:
                         if entry_count >= count:
                             break
             # Remove trailing date heading if no entries follow it
+            while raw_lines and raw_lines[-1].startswith("## "):
+                raw_lines.pop()
+
+            # 兜底：如果微压缩后没有任何条目（最近 3 天无对话），
+            # 回退到无过滤模式，保留最近 2 条作为上下文锚点
+            if entry_count == 0:
+                return self._get_recent_index_unfiltered(min(count, 2), channel_filter)
+
+            return raw_lines
+        except OSError:
+            return []
+
+    def _get_recent_index_unfiltered(self, count: int, channel_filter: str = "") -> list[str]:
+        """无微压缩的 index 读取（兜底用）。"""
+        memory_dir = self.store.db_path.parent
+        index_file = memory_dir / "index.md"
+        if not index_file.exists():
+            return []
+        try:
+            raw_lines: list[str] = []
+            entry_count = 0
+            with open(index_file) as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped.startswith("## "):
+                        raw_lines.append(stripped)
+                    elif stripped.startswith("- "):
+                        if channel_filter:
+                            has_own_tag = stripped.endswith(f"[{channel_filter}]")
+                            has_no_tag = not stripped.endswith("[cli]") and not stripped.endswith("[acp]")
+                            if not has_own_tag and not has_no_tag:
+                                continue
+                        display = stripped.lstrip("- ")
+                        for tag in (" [cli]", " [acp]"):
+                            if display.endswith(tag):
+                                display = display[: -len(tag)]
+                                break
+                        raw_lines.append(display)
+                        entry_count += 1
+                        if entry_count >= count:
+                            break
             while raw_lines and raw_lines[-1].startswith("## "):
                 raw_lines.pop()
             return raw_lines

@@ -24,11 +24,12 @@ _DEDUP_SIMILARITY_THRESHOLD = 0.80
 # 灵感来源：Claude Code secretScanner（gitleaks 正则），但我们不阻止写入，
 # 而是把敏感值替换为 [REDACTED]，保留语义但去掉明文。
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("api_key",    re.compile(r'(?i)(api[_-]?key|apikey)\s*[:=]\s*\S{20,}')),
-    ("token",      re.compile(r'(?i)(token|secret|password)\s*[:=]\s*\S{16,}')),
+    ("api_key",    re.compile(r'(?i)(api[_\- ]?key|apikey)\s*[:=：]\s*\S{20,}')),
+    ("token",      re.compile(r'(?i)(token|secret|password)\s*[:=：]\s*\S{16,}')),
     ("bearer",     re.compile(r'(?i)Bearer\s+(\S{20,})')),
     ("private_key", re.compile(r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----')),
-    ("hex_secret", re.compile(r'(?<![A-Za-z0-9])[0-9a-f]{32,64}(?![A-Za-z0-9])')),
+    ("hex_secret", re.compile(r'(?<![A-Za-z0-9])[0-9a-fA-F]{32,64}(?![A-Za-z0-9])')),
+    ("app_id",     re.compile(r'cli_[a-f0-9]{16,}')),
 ]
 
 
@@ -40,24 +41,24 @@ def _redact_secrets(text: str) -> tuple[str, bool]:
     Returns:
         (脱敏后的文本, 是否发生了脱敏)
     """
+    _REPLACEMENTS = {
+        "api_key":     lambda m: m.group(1) + "=[REDACTED]",
+        "token":       lambda m: m.group(1) + "=[REDACTED]",
+        "bearer":      lambda _: "Bearer [REDACTED]",
+        "private_key": lambda _: "[REDACTED PRIVATE KEY]",
+        "hex_secret":  lambda _: "[REDACTED]",
+        "app_id":      lambda _: "[REDACTED_APP_ID]",
+    }
     redacted = False
     result = text
     for name, pattern in _SECRET_PATTERNS:
-        match = pattern.search(result)
-        if not match:
+        replacement = _REPLACEMENTS.get(name)
+        if not replacement:
             continue
-        if name in ("api_key", "token"):
-            # 保留 key 名，替换值：api_key=xxx → api_key=[REDACTED]
-            result = pattern.sub(
-                lambda m: m.group(1) + "=[REDACTED]", result
-            )
-        elif name == "bearer":
-            result = pattern.sub("Bearer [REDACTED]", result)
-        elif name == "private_key":
-            result = pattern.sub("[REDACTED PRIVATE KEY]", result)
-        elif name == "hex_secret":
-            result = pattern.sub("[REDACTED]", result)
-        redacted = True
+        new_result = pattern.sub(replacement, result)
+        if new_result != result:
+            result = new_result
+            redacted = True
     return result, redacted
 
 
@@ -1038,6 +1039,25 @@ class MemoryStore:
             logger.info(f"Archived {len(to_archive)} cold memories (threshold={threshold})")
 
         return len(to_archive)
+
+    def archive_by_ids(self, ids: list[int]) -> int:
+        """批量归档指定 ID 的记忆。
+
+        Returns: 实际归档的数量。
+        """
+        if not ids:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        placeholders = ",".join("?" for _ in ids)
+        cur = self._conn.execute(
+            f"UPDATE memories SET archived = 1, updated_at = ? WHERE id IN ({placeholders}) AND archived = 0",
+            [now] + list(ids),
+        )
+        self._conn.commit()
+        count = cur.rowcount
+        if count:
+            logger.info(f"Archived {count} memories by ID")
+        return count
 
     # ------------------------------------------------------------------
     # Stats

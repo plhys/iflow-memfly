@@ -189,7 +189,7 @@ class MemoryDaemon:
         consolidated = 0
         max_groups = 50
 
-        for category in ("entity", "event", "insight"):
+        for category in ("entity", "event", "insight", "correction"):
             if consolidated >= max_groups:
                 break
 
@@ -222,13 +222,9 @@ class MemoryDaemon:
                         if consolidated >= max_groups:
                             break
 
-            # 批量归档被合并的记忆
+            # 批量归档被合并的记忆（通过公共 API，不直接操作 _conn）
             if merged_ids:
-                self.store._conn.execute(
-                    f"UPDATE memories SET archived = 1 WHERE id IN ({','.join('?' for _ in merged_ids)})",
-                    list(merged_ids),
-                )
-                self.store._conn.commit()
+                self.store.archive_by_ids(list(merged_ids))
 
         return consolidated
 
