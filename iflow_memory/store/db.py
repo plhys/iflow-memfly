@@ -20,6 +20,46 @@ VALID_CATEGORIES = frozenset({"identity", "preference", "entity", "event", "insi
 # Fuzzy dedup threshold — Jaccard similarity above this means duplicate
 _DEDUP_SIMILARITY_THRESHOLD = 0.80
 
+# 密钥/凭证检测模式 — 匹配到的记忆在 add() 时自动脱敏
+# 灵感来源：Claude Code secretScanner（gitleaks 正则），但我们不阻止写入，
+# 而是把敏感值替换为 [REDACTED]，保留语义但去掉明文。
+_SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("api_key",    re.compile(r'(?i)(api[_-]?key|apikey)\s*[:=]\s*\S{20,}')),
+    ("token",      re.compile(r'(?i)(token|secret|password)\s*[:=]\s*\S{16,}')),
+    ("bearer",     re.compile(r'(?i)Bearer\s+(\S{20,})')),
+    ("private_key", re.compile(r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----')),
+    ("hex_secret", re.compile(r'(?<![A-Za-z0-9])[0-9a-f]{32,64}(?![A-Za-z0-9])')),
+]
+
+
+def _redact_secrets(text: str) -> tuple[str, bool]:
+    """检测并脱敏文本中的密钥/凭证。
+
+    不阻止写入，而是把敏感值替换为 [REDACTED]，保留语义但去掉明文。
+
+    Returns:
+        (脱敏后的文本, 是否发生了脱敏)
+    """
+    redacted = False
+    result = text
+    for name, pattern in _SECRET_PATTERNS:
+        match = pattern.search(result)
+        if not match:
+            continue
+        if name in ("api_key", "token"):
+            # 保留 key 名，替换值：api_key=xxx → api_key=[REDACTED]
+            result = pattern.sub(
+                lambda m: m.group(1) + "=[REDACTED]", result
+            )
+        elif name == "bearer":
+            result = pattern.sub("Bearer [REDACTED]", result)
+        elif name == "private_key":
+            result = pattern.sub("[REDACTED PRIVATE KEY]", result)
+        elif name == "hex_secret":
+            result = pattern.sub("[REDACTED]", result)
+        redacted = True
+    return result, redacted
+
 
 def _normalize_text(text: str) -> str:
     """标准化文本用于去重比较：去空格差异、统一标点、转小写。"""
@@ -58,7 +98,7 @@ def _cjk_ratio(text: str) -> float:
 
 
 # Current schema version — bump this when adding migrations
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _serialize_f32(vec: list[float]) -> bytes:
@@ -177,6 +217,8 @@ class MemoryStore:
             self._migrate_v4()
         if version < 5:
             self._migrate_v5()
+        if version < 6:
+            self._migrate_v6()
 
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -324,6 +366,30 @@ class MemoryStore:
         """)
         self._conn.commit()
 
+    def _migrate_v6(self) -> None:
+        """Migration v6: scope column for memory partitioning.
+
+        scope 字段实现记忆分区隔离：
+        - "global": 所有渠道可见（默认）
+        - "private": 仅创建者渠道可见
+        这样同一个 daemon 可以服务多个身份（如妖妖酒和天灵灵），
+        而不会互相污染记忆。
+        """
+        logger.info("Running migration v6: adding scope column")
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'"
+            )
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        self._conn.commit()
+
     # ------------------------------------------------------------------
     # Seed memories (pre-installed lessons for new users)
     # ------------------------------------------------------------------
@@ -450,7 +516,8 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def add(self, category: str, text: str, source_session: str = "",
-            embedding: Optional[list[float]] = None) -> int:
+            embedding: Optional[list[float]] = None,
+            scope: str = "global") -> int:
         """Insert a new memory, or return existing id if duplicate.
 
         Raises ValueError if category is invalid or text is empty.
@@ -463,6 +530,11 @@ class MemoryStore:
         text = text.strip()
         if not text:
             raise ValueError("Memory text cannot be empty")
+
+        # 密钥兜底：即使 LLM 提取了含密钥的记忆，入库前也会脱敏
+        text, was_redacted = _redact_secrets(text)
+        if was_redacted:
+            logger.info(f"[密钥过滤] 记忆已脱敏: {text[:60]}...")
 
         # Dedup: check for existing active memory with same text + category
         existing = self._conn.execute(
@@ -497,9 +569,9 @@ class MemoryStore:
         now = datetime.now(timezone.utc).isoformat()
         embed_blob = _serialize_f32(embedding) if embedding else None
         cur = self._conn.execute(
-            """INSERT INTO memories (category, text, source_session, created_at, updated_at, embedding)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (category, text, source_session, now, now, embed_blob),
+            """INSERT INTO memories (category, text, source_session, created_at, updated_at, embedding, scope)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (category, text, source_session, now, now, embed_blob, scope),
         )
         row_id = cur.lastrowid
 
@@ -769,46 +841,138 @@ class MemoryStore:
     def get_top_memories(self, limit: int = 80) -> list[dict]:
         """Get top memories for injection into AGENTS.md.
 
-        Rules:
-        - identity and preference: always included (up to 20 each)
-        - entity, event, insight: ranked by hotness score, fill remaining slots
+        三阶段选择：
+        1. 身份锚定 — identity/preference/correction 全量纳入（上限各 20）
+        2. 热度排序 — entity/event/insight 按 hotness 填充剩余名额
+        3. 图谱扩展 — 对入选记忆做一跳关联，把高关联但未入选的记忆补进来
+
+        每条记忆附带 freshness 标记（天数），供 injector 做新鲜度展示。
 
         Returns list of dicts sorted by category then hotness desc.
         """
         result: list[dict] = []
+        seen_ids: set[int] = set()
         remaining = limit
 
-        # Phase 1: always-include categories
+        # Phase 1: 身份锚定 — 这些类别定义"我是谁"，全量纳入
         for cat in ("identity", "preference", "correction"):
             cap = min(20, remaining)
             rows = self.get_by_category(cat, limit=cap)
             for r in rows:
                 r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
+                r["age_days"] = self._calc_age_days(r["updated_at"])
+                seen_ids.add(r["id"])
             result.extend(rows)
             remaining -= len(rows)
 
         if remaining <= 0:
-            result.sort(key=lambda r: (r["category"], -r.get("hotness", 0)))
-            return result
+            return self._sort_by_category(result)
 
-        # Phase 2: ranked categories — fetch candidates and sort by hotness
+        # Phase 2: 热度排序 — 从知识/事件/经验中选最活跃的
         candidates: list[dict] = []
         for cat in ("entity", "event", "insight"):
-            # Fetch a generous pool to rank from
             rows = self.get_by_category(cat, limit=100)
             for r in rows:
+                if r["id"] in seen_ids:
+                    continue
                 r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
-            candidates.extend(rows)
+                r["age_days"] = self._calc_age_days(r["updated_at"])
+                candidates.append(r)
 
-        # Sort by hotness descending and take top remaining
         candidates.sort(key=lambda r: r["hotness"], reverse=True)
-        result.extend(candidates[:remaining])
+        phase2_picks = candidates[:remaining]
+        for r in phase2_picks:
+            seen_ids.add(r["id"])
+        result.extend(phase2_picks)
+        remaining = limit - len(result)
 
-        # Final sort: by category then hotness desc
-        category_order = {"identity": 0, "preference": 1, "correction": 2, "entity": 3, "event": 4, "insight": 5}
-        result.sort(key=lambda r: (category_order.get(r["category"], 9), -r.get("hotness", 0)))
+        # Phase 3: 图谱扩展 — 对 Phase 2 入选的记忆做一跳关联
+        # 把高关联但未入选的记忆补进来，让注入内容有"连贯性"
+        if remaining > 0 and phase2_picks:
+            graph_bonus = self._expand_via_graph(
+                seed_ids=[r["id"] for r in phase2_picks],
+                seen_ids=seen_ids,
+                max_expand=min(remaining, 10),
+                min_strength=0.35,
+            )
+            result.extend(graph_bonus)
 
-        return result
+        return self._sort_by_category(result)
+
+    @staticmethod
+    def _calc_age_days(updated_at: str) -> float:
+        """计算记忆距今天数。"""
+        try:
+            updated = datetime.fromisoformat(updated_at)
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - updated).total_seconds() / 86400.0
+        except (ValueError, TypeError):
+            return 999.0
+
+    @staticmethod
+    def _sort_by_category(memories: list[dict]) -> list[dict]:
+        """按类别顺序 + 热度降序排列。"""
+        order = {"identity": 0, "preference": 1, "correction": 2,
+                 "entity": 3, "event": 4, "insight": 5}
+        memories.sort(key=lambda r: (order.get(r["category"], 9), -r.get("hotness", 0)))
+        return memories
+
+    def _expand_via_graph(
+        self,
+        seed_ids: list[int],
+        seen_ids: set[int],
+        max_expand: int = 10,
+        min_strength: float = 0.35,
+    ) -> list[dict]:
+        """图谱一跳扩展：从种子记忆出发，找关联最强的未入选记忆。
+
+        这是融合 A 的核心巧思——不是随机补记忆，而是沿着知识图谱的边
+        找到跟已选记忆最相关的邻居，让注入内容形成"记忆簇"。
+        """
+        neighbor_scores: dict[int, float] = {}  # id -> 最高关联强度
+
+        for seed_id in seed_ids:
+            linked = self.get_linked_memories(
+                seed_id, min_strength=min_strength, limit=5
+            )
+            for link in linked:
+                lid = link["id"]
+                if lid in seen_ids:
+                    continue
+                strength = link.get("strength", 0.0)
+                if lid not in neighbor_scores or strength > neighbor_scores[lid]:
+                    neighbor_scores[lid] = strength
+
+        if not neighbor_scores:
+            return []
+
+        # 按关联强度排序，取 top
+        sorted_neighbors = sorted(
+            neighbor_scores.items(), key=lambda x: x[1], reverse=True
+        )[:max_expand]
+
+        bonus_ids = [n[0] for n in sorted_neighbors]
+        if not bonus_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in bonus_ids)
+        rows = self._conn.execute(
+            f"""SELECT id, category, text, created_at, updated_at, access_count, archived
+                FROM memories
+                WHERE id IN ({placeholders}) AND archived = 0""",
+            bonus_ids,
+        ).fetchall()
+
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["hotness"] = hotness_score(d["access_count"], d["updated_at"])
+            d["age_days"] = self._calc_age_days(d["updated_at"])
+            d["via_graph"] = True  # 标记为图谱扩展来的
+            results.append(d)
+
+        return results
 
     # ------------------------------------------------------------------
     # Update operations

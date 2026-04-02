@@ -135,10 +135,18 @@ class MemoryDaemon:
                 await self._maintenance()
 
     async def _maintenance(self) -> None:
-        """周期性维护：归档冷记忆、检查手写区大小、生成对话回顾。"""
+        """周期性维护：归档冷记忆、做梦整合、检查手写区大小、生成对话回顾。"""
         archived = self.store.archive_cold(min_age_days=5)
         if archived:
             logger.info(f"[维护] 归档 {archived} 条冷记忆")
+            self.injector.inject()
+
+        # 做梦整合：合并高度相似的记忆，减少冗余
+        # 灵感来源：Claude Code autoDream，但我们不用 LLM，
+        # 直接用 Jaccard 相似度在数据库层面做去重归并。
+        consolidated = self._dream_consolidate()
+        if consolidated:
+            logger.info(f"[做梦整合] 合并 {consolidated} 组重复记忆")
             self.injector.inject()
 
         for md_path in self.injector.agents_md_paths:
@@ -163,6 +171,66 @@ class MemoryDaemon:
             await self._generate_daily_briefing()
 
         self.store.checkpoint()
+
+    def _dream_consolidate(self, similarity_threshold: float = 0.75) -> int:
+        """做梦整合：扫描活跃记忆，合并高度相似的条目。
+
+        策略：
+        - 同类别内，Jaccard bigram 相似度 >= threshold 的记忆视为重复
+        - 保留 access_count 更高的那条（更常被引用 = 更重要）
+        - 被合并的记忆归档，不删除（可恢复）
+        - 每次最多处理 50 组，避免一次性改太多
+
+        这不是简单的去重——它模拟了人类睡眠时大脑整理记忆的过程：
+        把碎片化的相似记忆归并为一条更有代表性的记忆。
+        """
+        from ..store.db import _normalize_text, _jaccard_similarity
+
+        consolidated = 0
+        max_groups = 50
+
+        for category in ("entity", "event", "insight"):
+            if consolidated >= max_groups:
+                break
+
+            rows = self.store.get_by_category(category, limit=200)
+            if len(rows) < 2:
+                continue
+
+            # 建立归一化文本索引
+            normed = [(r, _normalize_text(r["text"])) for r in rows]
+            merged_ids: set[int] = set()
+
+            for i in range(len(normed)):
+                if normed[i][0]["id"] in merged_ids:
+                    continue
+                for j in range(i + 1, len(normed)):
+                    if normed[j][0]["id"] in merged_ids:
+                        continue
+                    sim = _jaccard_similarity(normed[i][1], normed[j][1])
+                    if sim >= similarity_threshold:
+                        # 保留 access_count 更高的
+                        keep, discard = normed[i][0], normed[j][0]
+                        if discard["access_count"] > keep["access_count"]:
+                            keep, discard = discard, keep
+                        merged_ids.add(discard["id"])
+                        consolidated += 1
+                        logger.debug(
+                            f"[做梦整合] 合并 #{discard['id']} -> #{keep['id']} "
+                            f"(sim={sim:.2f})"
+                        )
+                        if consolidated >= max_groups:
+                            break
+
+            # 批量归档被合并的记忆
+            if merged_ids:
+                self.store._conn.execute(
+                    f"UPDATE memories SET archived = 1 WHERE id IN ({','.join('?' for _ in merged_ids)})",
+                    list(merged_ids),
+                )
+                self.store._conn.commit()
+
+        return consolidated
 
     async def _generate_missing_recap(self) -> None:
         """生成最近缺失的对话回顾。"""

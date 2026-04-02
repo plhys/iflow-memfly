@@ -235,6 +235,11 @@ class MemoryInjector:
         for mem in memories:
             grouped[mem["category"]].append(mem["text"])
 
+        # 按记忆 ID 建立索引，方便查 age_days 和 via_graph
+        mem_index: dict[str, dict] = {}
+        for mem in memories:
+            mem_index[mem["text"]] = mem
+
         # Emit each category in display order, skipping empty ones
         for cat_key, cat_name in CATEGORY_DISPLAY:
             texts = grouped.get(cat_key)
@@ -245,10 +250,18 @@ class MemoryInjector:
                 # Ensure single-line: collapse any internal newlines
                 clean = text.replace("\n", " ").strip()
                 # Prevent SECTION_MARKER from appearing in memory text
-                # (would confuse the regex replacement in _update_agents_md)
                 if SECTION_MARKER in clean:
                     clean = clean.replace(SECTION_MARKER, "[记忆系统标记]")
-                lines.append(f"- {clean}")
+                # 新鲜度标记：超过 14 天的记忆标 [旧]，提醒 AI 可能过时
+                meta = mem_index.get(text, {})
+                age = meta.get("age_days", 0)
+                tags = []
+                if age > 14:
+                    tags.append("旧")
+                if meta.get("via_graph"):
+                    tags.append("关联")
+                suffix = f" [{','.join(tags)}]" if tags else ""
+                lines.append(f"- {clean}{suffix}")
             lines.append("")
 
         return "\n".join(lines)
@@ -279,29 +292,45 @@ class MemoryInjector:
     def _get_recent_index(self, count: int = 3, channel_filter: str = "") -> list[str]:
         """Read the most recent L1 index entries from index.md.
 
-        Returns a list of entry strings. Date headings (## YYYY-MM-DD) are
-        preserved as-is so cross-day entries are visually separated.
+        微压缩策略：最近 3 天的条目完整保留，更早的只保留日期标题
+        （让 AI 知道那天有对话，但不占注入空间）。
 
         Args:
             count: max number of entries to return.
             channel_filter: if set ("cli" or "acp"), only return entries
                 matching that tag. Entries without a tag are included for all.
         """
-        # Locate index.md via store's db_path parent (= memory_dir)
         memory_dir = self.store.db_path.parent
         index_file = memory_dir / "index.md"
         if not index_file.exists():
             return []
+
+        # 微压缩：3 天内的条目完整保留，更早的压缩为仅日期
+        today = datetime.now().date()
+        fresh_cutoff = today - timedelta(days=3)
+
         try:
             raw_lines: list[str] = []
             entry_count = 0
+            current_date_str = ""
+            current_date_is_old = False
+
             with open(index_file) as f:
                 for line in f:
                     stripped = line.strip()
                     if stripped.startswith("## "):
-                        # Date heading — include it but don't count toward limit
+                        current_date_str = stripped.lstrip("# ").strip()
+                        # 判断这个日期是否超过 3 天
+                        try:
+                            d = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+                            current_date_is_old = d < fresh_cutoff
+                        except ValueError:
+                            current_date_is_old = False
                         raw_lines.append(stripped)
                     elif stripped.startswith("- "):
+                        # 微压缩：旧日期的条目跳过
+                        if current_date_is_old:
+                            continue
                         # Check channel tag filter
                         if channel_filter:
                             has_own_tag = stripped.endswith(f"[{channel_filter}]")
