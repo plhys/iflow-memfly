@@ -343,6 +343,27 @@ python -m pytest tests/ -v
 
 ## Changelog
 
+### v2.0.0
+
+**新功能**
+
+- **知识图谱**：记忆写入时自动建立关联网络（`memory_links` 表），支持向量相似度 + 关键词双路径匹配，提供关系查询、图扩展、全图导出等 6 个 API
+- **每日简报**：维护周期自动生成当日记忆简报（LLM 生成 + 模板 fallback），注入 AGENTS.md 供新会话快速恢复上下文
+- **LLM 深度整合（做梦）**：空闲时调用 LLM 对记忆进行合并、淘汰、升级操作，支持时间感知和类别敏感度
+- **记忆分区（scope）**：新增 `scope` 列（schema v6），支持 global / private 分区，所有查询方法均支持 scope 过滤
+- **密钥自动脱敏**：入库前自动检测并替换 hex 格式密钥，防止敏感信息泄露到记忆库
+
+**Bug 修复**
+
+- `store.add()` 返回 `tuple[int, bool]`，消除 `is_new` 检测时的双重全表扫描（性能瓶颈）
+- `briefing.py` 改用公开方法 `get_memories_by_date()` / `get_state_snapshot_by_date()` 替代直接访问 `store._conn`
+- `_create_links_by_keywords` 移除冗余 `commit()`
+- `BriefingGenerator` 复用外部 `Summarizer` 实例，避免重复创建 httpx 客户端
+- briefing + summarizer 文件写入改为原子操作（`tempfile` + `os.replace()`）
+- `hex_secret` 正则增加 negative lookbehind，避免 git commit hash 误判
+- `web.py` + `__main__.py` 补全 `knowledge_graph` / `daily_briefing` / `llm_dream` 功能开关
+- `pyproject.toml` 版本号同步至 2.0.0
+
 ### v1.3.4
 
 - **知识图谱关联**：新增 `memory_links` 表（schema v5），记忆写入后自动通过向量相似度建立关联，支持关键词降级匹配；提供创建、查询、扩展、导出、统计 6 个方法
