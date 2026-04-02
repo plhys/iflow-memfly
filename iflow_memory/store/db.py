@@ -28,7 +28,7 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("token",      re.compile(r'(?i)(token|secret|password)\s*[:=：]\s*\S{16,}')),
     ("bearer",     re.compile(r'(?i)Bearer\s+(\S{20,})')),
     ("private_key", re.compile(r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----')),
-    ("hex_secret", re.compile(r'(?<![A-Za-z0-9])[0-9a-fA-F]{32,64}(?![A-Za-z0-9])')),
+    ("hex_secret", re.compile(r'(?<![A-Za-z0-9])(?<!commit )(?<!hash )[0-9a-fA-F]{32,64}(?![A-Za-z0-9])')),
     ("app_id",     re.compile(r'cli_[a-f0-9]{16,}')),
 ]
 
@@ -512,17 +512,45 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_memories_by_date(self, date_str: str, limit: int = 50) -> list[dict]:
+        """获取指定日期创建的活跃记忆。"""
+        rows = self._conn.execute(
+            """SELECT category, text, created_at
+               FROM memories
+               WHERE archived = 0
+                 AND created_at LIKE ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (f"{date_str}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_state_snapshot_by_date(self, date_str: str) -> dict | None:
+        """获取指定日期最新的状态快照。"""
+        rows = self._conn.execute(
+            """SELECT goal, progress, decisions, next_steps, critical_context
+               FROM state_snapshots
+               WHERE date = ?
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (date_str,),
+        ).fetchall()
+        if rows:
+            return dict(rows[0])
+        return None
+
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
 
     def add(self, category: str, text: str, source_session: str = "",
             embedding: Optional[list[float]] = None,
-            scope: str = "global") -> int:
+            scope: str = "global") -> tuple[int, bool]:
         """Insert a new memory, or return existing id if duplicate.
 
         Raises ValueError if category is invalid or text is empty.
-        Returns the row id (new or existing).
+        Returns (row_id, is_new): row_id is the id of the new or existing
+        memory; is_new is True only when a new row was actually inserted.
         """
         if category not in VALID_CATEGORIES:
             raise ValueError(
@@ -545,7 +573,7 @@ class MemoryStore:
         if existing:
             self.mark_accessed([existing[0]])
             logger.debug(f"Dedup: memory #{existing[0]} already exists, skipped")
-            return existing[0]
+            return existing[0], False
 
         # Fuzzy dedup: normalized text match + Jaccard similarity
         norm_new = _normalize_text(text)
@@ -558,14 +586,14 @@ class MemoryStore:
             if norm_old == norm_new:
                 self.mark_accessed([row["id"]])
                 logger.debug(f"Dedup (normalized): memory #{row['id']} matches, skipped")
-                return row["id"]
+                return row["id"], False
             if _jaccard_similarity(norm_old, norm_new) >= _DEDUP_SIMILARITY_THRESHOLD:
                 self.mark_accessed([row["id"]])
                 logger.info(
                     f"Dedup (fuzzy): memory #{row['id']} similar, skipped. "
                     f"Existing: {row['text'][:50]}... | New: {text[:50]}..."
                 )
-                return row["id"]
+                return row["id"], False
 
         now = datetime.now(timezone.utc).isoformat()
         embed_blob = _serialize_f32(embedding) if embedding else None
@@ -589,7 +617,7 @@ class MemoryStore:
         self._conn.commit()
 
         logger.debug(f"Added memory #{row_id} [{category}]: {text[:60]}")
-        return row_id
+        return row_id, True
 
     # ------------------------------------------------------------------
     # Read / search operations
@@ -600,12 +628,13 @@ class MemoryStore:
         query: str,
         category: str | None = None,
         limit: int = 10,
+        scope: str | None = None,
     ) -> list[dict]:
         """Full-text search across memories with LIKE fallback.
 
         First tries FTS5 MATCH (trigram). If no results, falls back to
         LIKE query which handles short keywords better.
-        Optionally filter by category. Returns list of dicts with
+        Optionally filter by category and/or scope. Returns list of dicts with
         id, category, text, created_at, access_count, rank.
         Increments access_count for all returned results.
         """
@@ -627,6 +656,9 @@ class MemoryStore:
         if category:
             sql += "  AND m.category = ?\n"
             params.append(category)
+        if scope is not None:
+            sql += "  AND m.scope = ?\n"
+            params.append(scope)
         sql += "ORDER BY rank\nLIMIT ?"
         params.append(limit)
 
@@ -648,6 +680,9 @@ class MemoryStore:
             if category:
                 sql += "  AND category = ?\n"
                 params.append(category)
+            if scope is not None:
+                sql += "  AND scope = ?\n"
+                params.append(scope)
             sql += "ORDER BY updated_at DESC\nLIMIT ?"
             params.append(limit)
             rows = self._conn.execute(sql, params).fetchall()
@@ -665,6 +700,7 @@ class MemoryStore:
         query_embedding: Optional[list[float]] = None,
         category: str | None = None,
         limit: int = 10,
+        scope: str | None = None,
     ) -> list[dict]:
         """深度回忆 — FTS5 + Vector RRF 融合搜索。
 
@@ -684,7 +720,7 @@ class MemoryStore:
         )
 
         if not use_vec:
-            return self.search(query, category=category, limit=limit)
+            return self.search(query, category=category, limit=limit, scope=scope)
 
         # CJK 自适应权重
         cjk_ratio = _cjk_ratio(query)
@@ -696,7 +732,7 @@ class MemoryStore:
         k = 60  # RRF 常数
 
         # === FTS5 路 ===
-        fts_results = self.search(query, category=category, limit=limit * 2)
+        fts_results = self.search(query, category=category, limit=limit * 2, scope=scope)
         fts_ranks: dict[int, int] = {}
         for rank, r in enumerate(fts_results, 1):
             fts_ranks[r["id"]] = rank
@@ -716,28 +752,21 @@ class MemoryStore:
                 vec_sql, (_serialize_f32(query_embedding), vec_limit)
             ).fetchall()
 
-            # 如果有 category 过滤，需要关联 memories 表
-            if category:
-                active = []
-                for vr in vec_rows:
-                    mem = self._conn.execute(
-                        "SELECT id FROM memories WHERE id = ? AND category = ? AND archived = 0",
-                        (vr[0], category),
-                    ).fetchone()
-                    if mem:
-                        active.append(vr)
-                vec_rows = active
-            else:
-                # 过滤已归档的
-                active = []
-                for vr in vec_rows:
-                    mem = self._conn.execute(
-                        "SELECT id FROM memories WHERE id = ? AND archived = 0",
-                        (vr[0],),
-                    ).fetchone()
-                    if mem:
-                        active.append(vr)
-                vec_rows = active
+            # 过滤已归档的，以及按 category/scope 筛选
+            active = []
+            for vr in vec_rows:
+                filter_sql = "SELECT id FROM memories WHERE id = ? AND archived = 0"
+                filter_params: list = [vr[0]]
+                if category:
+                    filter_sql += " AND category = ?"
+                    filter_params.append(category)
+                if scope is not None:
+                    filter_sql += " AND scope = ?"
+                    filter_params.append(scope)
+                mem = self._conn.execute(filter_sql, filter_params).fetchone()
+                if mem:
+                    active.append(vr)
+            vec_rows = active
 
             for rank, vr in enumerate(vec_rows, 1):
                 vec_ranks[vr[0]] = rank
@@ -824,6 +853,7 @@ class MemoryStore:
         category: str,
         limit: int = 50,
         include_archived: bool = False,
+        scope: str | None = None,
     ) -> list[dict]:
         """Get memories by category, ordered by updated_at desc."""
         sql = """
@@ -834,12 +864,15 @@ class MemoryStore:
         params: list = [category]
         if not include_archived:
             sql += "  AND archived = 0\n"
+        if scope is not None:
+            sql += "  AND scope = ?\n"
+            params.append(scope)
         sql += "ORDER BY updated_at DESC\nLIMIT ?"
         params.append(limit)
 
         return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
-    def get_top_memories(self, limit: int = 80) -> list[dict]:
+    def get_top_memories(self, limit: int = 80, scope: str | None = None) -> list[dict]:
         """Get top memories for injection into AGENTS.md.
 
         三阶段选择：
@@ -858,7 +891,7 @@ class MemoryStore:
         # Phase 1: 身份锚定 — 这些类别定义"我是谁"，全量纳入
         for cat in ("identity", "preference", "correction"):
             cap = min(20, remaining)
-            rows = self.get_by_category(cat, limit=cap)
+            rows = self.get_by_category(cat, limit=cap, scope=scope)
             for r in rows:
                 r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
                 r["age_days"] = self._calc_age_days(r["updated_at"])
@@ -872,7 +905,7 @@ class MemoryStore:
         # Phase 2: 热度排序 — 从知识/事件/经验中选最活跃的
         candidates: list[dict] = []
         for cat in ("entity", "event", "insight"):
-            rows = self.get_by_category(cat, limit=100)
+            rows = self.get_by_category(cat, limit=100, scope=scope)
             for r in rows:
                 if r["id"] in seen_ids:
                     continue
@@ -1198,8 +1231,6 @@ class MemoryStore:
         for target_id, sim in scored[:max_links]:
             if self._insert_link(memory_id, target_id, sim, "similar", now):
                 created += 1
-        if created > 0:
-            self._conn.commit()
         return created
 
     def _insert_link(

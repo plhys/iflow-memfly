@@ -8,7 +8,9 @@
 import asyncio
 import json
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -675,7 +677,17 @@ class Summarizer:
 
         if recap:
             recap = recap.strip()
-            cache_file.write_text(recap, encoding="utf-8")
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(cache_file.parent), suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(recap)
+                os.replace(tmp_path, str(cache_file))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             logger.info(f"Daily recap generated and cached: {cache_file}")
 
         return recap

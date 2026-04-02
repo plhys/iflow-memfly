@@ -297,6 +297,9 @@ def create_app(
             "state_snapshot": {"name": "状态快照", "cost": "中等", "desc": "结构化工作状态检查点（目标/进度/决策/下一步）"},
             "daily_recap": {"name": "每日工作回顾", "cost": "较高", "desc": "生成前一天的完整工作回顾"},
             "vector_search": {"name": "深度回忆", "cost": "视后端", "desc": "向量搜索（需配置 embed_backend）"},
+            "knowledge_graph": {"name": "知识图谱", "cost": "轻量", "desc": "为记忆建立关联链接，注入时做图谱扩展"},
+            "daily_briefing": {"name": "每日简报", "cost": "中等", "desc": "每天生成一段精炼的工作回顾简报"},
+            "llm_dream": {"name": "LLM 深度整合", "cost": "较高", "desc": "用 LLM 分析记忆库，合并重复/过时条目（默认关闭）"},
         }
         features = []
         for key, info in feature_info.items():
@@ -312,7 +315,7 @@ def create_app(
         """更新功能开关。body: {"key": "atmosphere", "enabled": false}"""
         key = body.get("key")
         enabled = body.get("enabled")
-        valid_keys = {"index_line", "summary", "classify", "atmosphere", "state_snapshot", "daily_recap", "vector_search"}
+        valid_keys = {"index_line", "summary", "classify", "atmosphere", "state_snapshot", "daily_recap", "vector_search", "knowledge_graph", "daily_briefing", "llm_dream"}
         if key not in valid_keys:
             return JSONResponse({"error": f"未知功能: {key}"}, 400)
         if not isinstance(enabled, bool):

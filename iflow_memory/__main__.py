@@ -48,6 +48,9 @@ def _first_run_setup(config_path) -> None:
         ("state_snapshot", "状态快照", "中等", "结构化工作状态检查点（目标/进度/决策/下一步）"),
         ("daily_recap", "每日工作回顾", "较高", "生成前一天的完整工作回顾"),
         ("vector_search", "深度回忆", "视后端", "向量搜索（需配置 embed_backend）"),
+        ("knowledge_graph", "知识图谱", "轻量", "为记忆建立关联链接"),
+        ("daily_briefing", "每日简报", "中等", "每天生成工作回顾简报"),
+        ("llm_dream", "LLM 深度整合", "较高", "用 LLM 合并重复/过时记忆（默认关闭）"),
     ]
 
     print("可选方案：")
@@ -334,6 +337,9 @@ FEATURE_INFO = {
     "state_snapshot": ("状态快照", "中等", "结构化工作状态检查点（目标/进度/决策/下一步）"),
     "daily_recap": ("每日工作回顾", "较高", "生成前一天的完整工作回顾"),
     "vector_search": ("深度回忆", "视后端", "向量搜索（需配置 embed_backend）"),
+    "knowledge_graph": ("知识图谱", "轻量", "为记忆建立关联链接"),
+    "daily_briefing": ("每日简报", "中等", "每天生成工作回顾简报"),
+    "llm_dream": ("LLM 深度整合", "较高", "用 LLM 合并重复/过时记忆（默认关闭）"),
 }
 
 

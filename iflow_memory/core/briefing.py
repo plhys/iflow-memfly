@@ -5,7 +5,9 @@
 """
 
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -41,10 +43,11 @@ BRIEFING_PROMPT = """请根据以下信息，生成一段今日工作简报。
 class BriefingGenerator:
     """每日简报生成器。"""
 
-    def __init__(self, config: MemoryConfig, store: MemoryStore):
+    def __init__(self, config: MemoryConfig, store: MemoryStore, summarizer=None):
         self.config = config
         self.store = store
-        self.summarizer = Summarizer(config)
+        self._owns_summarizer = summarizer is None
+        self.summarizer = summarizer or Summarizer(config)
         self._memory_dir = Path(config.memory_dir)
 
     async def generate_daily_briefing(self, date_str: str | None = None) -> Optional[str]:
@@ -92,7 +95,17 @@ class BriefingGenerator:
 
         if briefing:
             briefing = briefing.strip()
-            briefing_file.write_text(briefing, encoding="utf-8")
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(briefing_file.parent), suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(briefing)
+                os.replace(tmp_path, str(briefing_file))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             logger.info(f"[每日简报] 生成完成: {briefing_file} ({len(briefing)} 字符)")
 
         return briefing
@@ -195,16 +208,7 @@ class BriefingGenerator:
     def _get_today_memories(self, date_str: str) -> list[dict]:
         """从 SQLite 读取指定日期创建的记忆。"""
         try:
-            rows = self.store._conn.execute(
-                """SELECT category, text, created_at
-                   FROM memories
-                   WHERE archived = 0
-                     AND created_at LIKE ?
-                   ORDER BY created_at DESC
-                   LIMIT 50""",
-                (f"{date_str}%",),
-            ).fetchall()
-            return [dict(r) for r in rows]
+            return self.store.get_memories_by_date(date_str)
         except Exception as e:
             logger.warning(f"[每日简报] 读取记忆失败: {e}")
             return []
@@ -212,19 +216,10 @@ class BriefingGenerator:
     def _get_today_state(self, date_str: str) -> Optional[dict]:
         """获取指定日期最新的状态快照。"""
         try:
-            rows = self.store._conn.execute(
-                """SELECT goal, progress, decisions, next_steps, critical_context
-                   FROM state_snapshots
-                   WHERE date = ?
-                   ORDER BY created_at DESC
-                   LIMIT 1""",
-                (date_str,),
-            ).fetchall()
-            if rows:
-                return dict(rows[0])
+            return self.store.get_state_snapshot_by_date(date_str)
         except Exception as e:
             logger.warning(f"[每日简报] 读取状态快照失败: {e}")
-        return None
+            return None
 
     def _build_context(
         self,
@@ -265,4 +260,5 @@ class BriefingGenerator:
 
     async def close(self) -> None:
         """关闭资源。"""
-        await self.summarizer.close()
+        if self._owns_summarizer:
+            await self.summarizer.close()

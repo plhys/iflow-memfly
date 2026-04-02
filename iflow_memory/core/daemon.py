@@ -34,7 +34,7 @@ class MemoryDaemon:
         self.store = MemoryStore(db_path, embed_dim=0)
         self.indexer = Indexer(Path(config.memory_dir), store=self.store)
         self.summarizer = Summarizer(config)
-        self.briefing = BriefingGenerator(config, self.store)
+        self.briefing = BriefingGenerator(config, self.store, summarizer=self.summarizer)
         self.injector = MemoryInjector(self.store, agents_md_paths=config.agents_md_paths)
         self.watcher = SessionWatcher(
             acp_dir=Path(config.acp_sessions_dir),
@@ -293,7 +293,7 @@ class MemoryDaemon:
                             category=category,
                             text=new_text,
                             source_session="dream_consolidate",
-                        )
+                        )  # return value unused here
                     except Exception as e:
                         logger.error(f"[做梦整合·LLM] 新记忆写入失败: {e}")
                         continue
@@ -521,15 +521,12 @@ class MemoryDaemon:
                 continue
             embedding = embeddings[i] if embeddings and i < len(embeddings) else None
             try:
-                # 记录写入前的记忆数，用于判断是否真正新建
-                pre_count = self.store.stats()["total"]
-                row_id = self.store.add(
+                row_id, is_new = self.store.add(
                     category=category,
                     text=text,
                     source_session=session_path.name,
                     embedding=embedding,
                 )
-                is_new = self.store.stats()["total"] > pre_count
                 count += 1
                 # 知识图谱：仅为新建的记忆创建关联
                 if is_new and self.config.features.get("knowledge_graph", True):
