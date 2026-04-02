@@ -194,6 +194,15 @@ python -m pytest tests/ -v
 
 ## Changelog
 
+### v1.3.4
+
+- **知识图谱关联**：新增 `memory_links` 表（schema v5），记忆写入后自动通过向量相似度建立关联，支持关键词降级匹配；提供创建、查询、扩展、导出、统计 6 个方法
+- **每日简报生成**：新增 `BriefingGenerator`，在维护周期自动生成当日记忆简报（LLM 生成 + 模板 fallback 双路径），简报自动注入 AGENTS.md
+- **数据安全加固**：injector 写入 AGENTS.md 改为原子操作（临时文件 + `os.replace()`），写入前自动创建 `.bak` 备份，进程崩溃或磁盘满不再导致文件损坏
+- **事务完整性**：db.py `add()` 将 memories 表和 vec 表写入合并为单一事务，消除中间崩溃导致的数据不一致
+- **重试覆盖扩大**：summarizer `_call_llm` 异常捕获从 4 个具体子类改为 `httpx.TransportError`，覆盖所有瞬态网络错误
+- **防御性修复**：`_call_llm` 末尾 `raise last_error` 增加 `None` 兜底；indexer `_save_state()` 改为原子写入；记忆文本中的 SECTION_MARKER 自动转义防止注入格式混乱
+
 ### v1.3.3
 
 - 新增影子记录机制：守护进程在处理消息的同时维护滚动 6 小时的影子副本

@@ -49,6 +49,8 @@ class MemoryConfig:
         "state_snapshot": True,
         "daily_recap": True,
         "vector_search": True,
+        "knowledge_graph": True,
+        "daily_briefing": True,
     })
 
     # 深度回忆 — embedding 配置

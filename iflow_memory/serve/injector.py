@@ -9,9 +9,11 @@ cleanly replaced on subsequent runs without touching hand-written content.
 """
 
 import logging
+import os
 import re
 import tempfile
 from collections import defaultdict
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -139,8 +141,17 @@ class MemoryInjector:
             lines.append(time_anchor)
             lines.append("")
 
+        # 今日简报（如果存在）
+        briefing = self._get_latest_briefing()
+        if briefing:
+            lines.append("**今日简报**")
+            for bl in briefing.splitlines():
+                if bl.strip():
+                    lines.append(bl)
+            lines.append("")
+
         # Recent conversation context from index.md
-        recent = self._get_recent_index(50, channel_filter=channel_filter)
+        recent = self._get_recent_index(10, channel_filter=channel_filter)
         if recent:
             lines.append("**最近对话**")
             for entry in recent:
@@ -233,10 +244,37 @@ class MemoryInjector:
             for text in texts:
                 # Ensure single-line: collapse any internal newlines
                 clean = text.replace("\n", " ").strip()
+                # Prevent SECTION_MARKER from appearing in memory text
+                # (would confuse the regex replacement in _update_agents_md)
+                if SECTION_MARKER in clean:
+                    clean = clean.replace(SECTION_MARKER, "[记忆系统标记]")
                 lines.append(f"- {clean}")
             lines.append("")
 
         return "\n".join(lines)
+
+    def _get_latest_briefing(self) -> Optional[str]:
+        """读取最近的每日简报文件。
+
+        优先读今天的，没有则找最近 3 天内的。
+
+        Returns:
+            简报文本，或 None。
+        """
+        memory_dir = self.store.db_path.parent
+        today = datetime.now().date()
+        for days_ago in range(0, 4):
+            target_date = today - timedelta(days=days_ago)
+            date_str = target_date.strftime("%Y-%m-%d")
+            briefing_file = memory_dir / f"briefing-{date_str}.md"
+            if briefing_file.exists():
+                try:
+                    text = briefing_file.read_text(encoding="utf-8").strip()
+                    if text:
+                        return text
+                except OSError:
+                    continue
+        return None
 
     def _get_recent_index(self, count: int = 3, channel_filter: str = "") -> list[str]:
         """Read the most recent L1 index entries from index.md.
@@ -437,8 +475,30 @@ class MemoryInjector:
             new_content = content + section_text
             logger.info(f"Appended new memory section to {path}")
 
+        # Atomic write: temp file + os.replace() to prevent data loss on crash
         try:
-            path.write_text(new_content, encoding="utf-8")
+            # Backup before overwriting
+            bak_path = path.with_suffix(".md.bak")
+            try:
+                bak_path.write_bytes(path.read_bytes())
+            except OSError:
+                pass  # Best-effort backup
+
+            # Write to temp file in same directory, then atomic rename
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".agents-"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                os.replace(tmp_path, str(path))
+            except BaseException:
+                # Clean up temp file on any failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except OSError as e:
             logger.error(f"Failed to write {path}: {e}")
             return False

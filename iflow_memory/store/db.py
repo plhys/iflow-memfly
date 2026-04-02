@@ -58,7 +58,7 @@ def _cjk_ratio(text: str) -> float:
 
 
 # Current schema version — bump this when adding migrations
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _serialize_f32(vec: list[float]) -> bytes:
@@ -175,6 +175,8 @@ class MemoryStore:
             self._migrate_v3()
         if version < 4:
             self._migrate_v4()
+        if version < 5:
+            self._migrate_v5()
 
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -298,6 +300,27 @@ class MemoryStore:
                 ON state_snapshots(date DESC);
             CREATE INDEX IF NOT EXISTS idx_state_session
                 ON state_snapshots(session_id);
+        """)
+        self._conn.commit()
+
+    def _migrate_v5(self) -> None:
+        """Migration v5: memory_links table for knowledge graph."""
+        logger.info("Running migration v5: creating memory_links table")
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id   INTEGER NOT NULL REFERENCES memories(id),
+                target_id   INTEGER NOT NULL REFERENCES memories(id),
+                strength    REAL    NOT NULL DEFAULT 0.0,
+                link_type   TEXT    NOT NULL DEFAULT 'similar',
+                created_at  TEXT    NOT NULL,
+                UNIQUE(source_id, target_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_links_source
+                ON memory_links(source_id);
+            CREATE INDEX IF NOT EXISTS idx_links_target
+                ON memory_links(target_id);
         """)
         self._conn.commit()
 
@@ -478,19 +501,19 @@ class MemoryStore:
                VALUES (?, ?, ?, ?, ?, ?)""",
             (category, text, source_session, now, now, embed_blob),
         )
-        self._conn.commit()
         row_id = cur.lastrowid
 
-        # 同步写入向量索引
+        # 同步写入向量索引（同一事务内）
         if embedding and self._vec_enabled:
             try:
                 self._conn.execute(
                     "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
                     (row_id, _serialize_f32(embedding)),
                 )
-                self._conn.commit()
             except Exception as e:
                 logger.warning(f"Failed to insert vec for memory #{row_id}: {e}")
+
+        self._conn.commit()
 
         logger.debug(f"Added memory #{row_id} [{category}]: {text[:60]}")
         return row_id
@@ -876,6 +899,244 @@ class MemoryStore:
             "archived": archived,
             "by_category": by_category,
         }
+
+    # ------------------------------------------------------------------
+    # Knowledge graph — memory linking
+    # ------------------------------------------------------------------
+
+    def create_links_for_memory(
+        self,
+        memory_id: int,
+        embedding: Optional[list[float]] = None,
+        similarity_threshold: float = 0.3,
+        max_links: int = 5,
+    ) -> int:
+        """为一条新记忆创建与已有记忆的关联。
+
+        策略：
+        1. 如果有 embedding，用余弦相似度找最近邻
+        2. 否则用关键词 Jaccard 相似度作为 fallback
+        同一对记忆只建一条双向链接（UNIQUE 约束保证）。
+
+        Returns: 创建的链接数。
+        """
+        # 获取新记忆的文本和分类
+        row = self._conn.execute(
+            "SELECT category, text FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if not row:
+            return 0
+
+        new_text = row["text"]
+        new_category = row["category"]
+        now = datetime.now(timezone.utc).isoformat()
+        created = 0
+
+        if embedding and self._vec_enabled and self.embed_dim > 0:
+            # 向量路径：用 sqlite-vec 找最近邻
+            try:
+                vec_rows = self._conn.execute(
+                    """SELECT rowid, distance
+                       FROM memories_vec
+                       WHERE embedding MATCH ?
+                       ORDER BY distance
+                       LIMIT ?""",
+                    (_serialize_f32(embedding), max_links + 5),
+                ).fetchall()
+
+                for vr in vec_rows:
+                    target_id = vr[0]
+                    if target_id == memory_id:
+                        continue
+                    # distance 是 L2 距离，转换为余弦相似度近似
+                    # 对于归一化向量：cosine_sim ≈ 1 - distance²/2
+                    distance = vr[1]
+                    similarity = max(0.0, 1.0 - distance * distance / 2.0)
+                    if similarity < similarity_threshold:
+                        continue
+                    # 检查目标未归档
+                    active = self._conn.execute(
+                        "SELECT id FROM memories WHERE id = ? AND archived = 0",
+                        (target_id,),
+                    ).fetchone()
+                    if not active:
+                        continue
+                    if self._insert_link(memory_id, target_id, similarity, "similar", now):
+                        created += 1
+                    if created >= max_links:
+                        break
+            except Exception as e:
+                logger.warning(f"[知识图谱] 向量关联失败，降级为关键词: {e}")
+                created += self._create_links_by_keywords(
+                    memory_id, new_text, new_category, similarity_threshold, max_links, now
+                )
+        else:
+            # 关键词 fallback
+            created += self._create_links_by_keywords(
+                memory_id, new_text, new_category, similarity_threshold, max_links, now
+            )
+
+        if created > 0:
+            self._conn.commit()
+            logger.debug(f"[知识图谱] 记忆 #{memory_id} 建立 {created} 条关联")
+        return created
+
+    def _create_links_by_keywords(
+        self,
+        memory_id: int,
+        text: str,
+        category: str,
+        threshold: float,
+        max_links: int,
+        now: str,
+    ) -> int:
+        """用 Jaccard bigram 相似度创建关联（无 embedding 时的 fallback）。"""
+        norm_new = _normalize_text(text)
+        # 取最近 200 条活跃记忆做候选
+        candidates = self._conn.execute(
+            """SELECT id, text FROM memories
+               WHERE archived = 0 AND id != ?
+               ORDER BY updated_at DESC
+               LIMIT 200""",
+            (memory_id,),
+        ).fetchall()
+
+        scored: list[tuple[int, float]] = []
+        for row in candidates:
+            norm_old = _normalize_text(row["text"])
+            sim = _jaccard_similarity(norm_old, norm_new)
+            if sim >= threshold:
+                scored.append((row["id"], sim))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        created = 0
+        for target_id, sim in scored[:max_links]:
+            if self._insert_link(memory_id, target_id, sim, "similar", now):
+                created += 1
+        if created > 0:
+            self._conn.commit()
+        return created
+
+    def _insert_link(
+        self,
+        source_id: int,
+        target_id: int,
+        strength: float,
+        link_type: str,
+        now: str,
+    ) -> bool:
+        """插入一条链接（双向），忽略重复。不 commit，由调用方统一提交。"""
+        # 保证 source < target 以避免重复
+        a, b = min(source_id, target_id), max(source_id, target_id)
+        try:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO memory_links
+                   (source_id, target_id, strength, link_type, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (a, b, strength, link_type, now),
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"[知识图谱] 链接插入跳过 ({a}->{b}): {e}")
+            return False
+
+    def get_linked_memories(
+        self,
+        memory_id: int,
+        min_strength: float = 0.0,
+        limit: int = 10,
+    ) -> list[dict]:
+        """获取与指定记忆关联的记忆列表。"""
+        rows = self._conn.execute(
+            """SELECT m.id, m.category, m.text, m.created_at, m.access_count,
+                      ml.strength, ml.link_type
+               FROM memory_links ml
+               JOIN memories m ON m.id = CASE
+                   WHEN ml.source_id = ? THEN ml.target_id
+                   ELSE ml.source_id
+               END
+               WHERE (ml.source_id = ? OR ml.target_id = ?)
+                 AND ml.strength >= ?
+                 AND m.archived = 0
+               ORDER BY ml.strength DESC
+               LIMIT ?""",
+            (memory_id, memory_id, memory_id, min_strength, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def expand_with_links(
+        self,
+        results: list[dict],
+        max_expand: int = 3,
+        min_strength: float = 0.3,
+    ) -> list[dict]:
+        """扩展搜索结果：为每条结果附加关联记忆。
+
+        在每个 result dict 中添加 'linked' 字段。
+        """
+        for r in results:
+            linked = self.get_linked_memories(
+                r["id"], min_strength=min_strength, limit=max_expand
+            )
+            r["linked"] = linked
+        return results
+
+    def get_knowledge_graph(self, min_strength: float = 0.2, limit: int = 500) -> dict:
+        """导出知识图谱数据（用于可视化）。
+
+        Returns:
+            {"nodes": [...], "links": [...]}
+        """
+        links = self._conn.execute(
+            """SELECT ml.source_id, ml.target_id, ml.strength, ml.link_type
+               FROM memory_links ml
+               JOIN memories m1 ON m1.id = ml.source_id AND m1.archived = 0
+               JOIN memories m2 ON m2.id = ml.target_id AND m2.archived = 0
+               WHERE ml.strength >= ?
+               ORDER BY ml.strength DESC
+               LIMIT ?""",
+            (min_strength, limit),
+        ).fetchall()
+
+        node_ids: set[int] = set()
+        link_list: list[dict] = []
+        for row in links:
+            node_ids.add(row["source_id"])
+            node_ids.add(row["target_id"])
+            link_list.append({
+                "source": row["source_id"],
+                "target": row["target_id"],
+                "strength": row["strength"],
+                "type": row["link_type"],
+            })
+
+        nodes: list[dict] = []
+        if node_ids:
+            placeholders = ",".join("?" for _ in node_ids)
+            rows = self._conn.execute(
+                f"""SELECT id, category, text, access_count
+                    FROM memories
+                    WHERE id IN ({placeholders}) AND archived = 0""",
+                list(node_ids),
+            ).fetchall()
+            for r in rows:
+                nodes.append({
+                    "id": r["id"],
+                    "category": r["category"],
+                    "text": r["text"][:80],
+                    "access_count": r["access_count"],
+                })
+
+        return {"nodes": nodes, "links": link_list}
+
+    def link_stats(self) -> dict:
+        """知识图谱统计信息。"""
+        total = self._conn.execute("SELECT COUNT(*) FROM memory_links").fetchone()[0]
+        avg_strength = self._conn.execute(
+            "SELECT AVG(strength) FROM memory_links"
+        ).fetchone()[0] or 0.0
+        return {"total_links": total, "avg_strength": round(avg_strength, 3)}
 
     # ------------------------------------------------------------------
     # Lifecycle

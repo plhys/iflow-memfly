@@ -17,6 +17,7 @@ from ..store.db import MemoryStore
 from ..store.embed import Embedder
 from .indexer import Indexer
 from .summarizer import Summarizer
+from .briefing import BriefingGenerator
 from .watcher import SessionWatcher
 from ..serve.injector import MemoryInjector
 
@@ -33,6 +34,7 @@ class MemoryDaemon:
         self.store = MemoryStore(db_path, embed_dim=0)
         self.indexer = Indexer(Path(config.memory_dir), store=self.store)
         self.summarizer = Summarizer(config)
+        self.briefing = BriefingGenerator(config, self.store)
         self.injector = MemoryInjector(self.store, agents_md_paths=config.agents_md_paths)
         self.watcher = SessionWatcher(
             acp_dir=Path(config.acp_sessions_dir),
@@ -62,6 +64,7 @@ class MemoryDaemon:
                 self.store = MemoryStore(db_path, embed_dim=self.embedder.dimension)
                 self.indexer.store = self.store
                 self.injector.store = self.store
+                self.briefing.store = self.store
                 logger.info(f"[深度回忆] 向量搜索已启用，维度={self.embedder.dimension}")
             else:
                 logger.info("[深度回忆] embedding 不可用，使用纯 FTS5 搜索")
@@ -79,6 +82,7 @@ class MemoryDaemon:
             self._process_task.cancel()
         self.store.close()
         await self.summarizer.close()
+        await self.briefing.close()
         if self.embedder:
             await self.embedder.close()
         logger.info("iFlow MemFly stopped")
@@ -154,6 +158,10 @@ class MemoryDaemon:
         if self.config.features.get("daily_recap", True):
             await self._generate_missing_recap()
 
+        # 每日简报生成
+        if self.config.features.get("daily_briefing", True):
+            await self._generate_daily_briefing()
+
         self.store.checkpoint()
 
     async def _generate_missing_recap(self) -> None:
@@ -177,6 +185,39 @@ class MemoryDaemon:
                 except Exception as e:
                     logger.error(f"[维护] 回顾生成失败: {e}")
             break
+
+    async def _generate_daily_briefing(self) -> None:
+        """生成今日简报（如果尚未生成）。"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        memory_dir = Path(self.config.memory_dir)
+        briefing_file = memory_dir / f"briefing-{today}.md"
+        if briefing_file.exists():
+            return
+
+        # 检查今天是否有对话记录（index.md 中有当天条目）
+        index_file = memory_dir / "index.md"
+        if not index_file.exists():
+            return
+        has_today = False
+        try:
+            with open(index_file, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip() == f"## {today}":
+                        has_today = True
+                        break
+        except OSError:
+            return
+        if not has_today:
+            return
+
+        logger.info(f"[每日简报] 开始生成 {today} 简报")
+        try:
+            briefing = await self.briefing.generate_daily_briefing(today)
+            if briefing:
+                self.injector.inject()
+                logger.info(f"[每日简报] {today} 简报已生成并注入")
+        except Exception as e:
+            logger.error(f"[每日简报] 生成失败: {e}")
 
     async def _flush_pending(self) -> None:
         """处理所有待处理的消息。"""
@@ -336,13 +377,24 @@ class MemoryDaemon:
                 continue
             embedding = embeddings[i] if embeddings and i < len(embeddings) else None
             try:
-                self.store.add(
+                # 记录写入前的记忆数，用于判断是否真正新建
+                pre_count = self.store.stats()["total"]
+                row_id = self.store.add(
                     category=category,
                     text=text,
                     source_session=session_path.name,
                     embedding=embedding,
                 )
+                is_new = self.store.stats()["total"] > pre_count
                 count += 1
+                # 知识图谱：仅为新建的记忆创建关联
+                if is_new and self.config.features.get("knowledge_graph", True):
+                    try:
+                        self.store.create_links_for_memory(
+                            row_id, embedding=embedding,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[知识图谱] 链接创建失败: {e}")
             except Exception as e:
                 logger.error(f"[记忆守护] 记忆写入失败: {e}")
         return count

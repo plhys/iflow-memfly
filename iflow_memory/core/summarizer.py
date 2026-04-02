@@ -377,7 +377,7 @@ class Summarizer:
                 if e.response.status_code < 500:
                     raise  # 4xx 不重试
                 last_error = e
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+            except httpx.TransportError as e:
                 last_error = e
             except (KeyError, IndexError) as e:
                 last_error = e  # API 返回非标准格式，重试
@@ -387,7 +387,7 @@ class Summarizer:
                 logger.warning(f"LLM call failed (attempt {attempt + 1}/3), retrying in {delay}s: {last_error}")
                 await asyncio.sleep(delay)
 
-        raise last_error
+        raise last_error or RuntimeError("LLM call failed after 3 attempts with no recorded error")
 
     async def generate_atmosphere_snapshot(self, messages: list[dict]) -> Optional[str]:
         """从对话中生成氛围快照（情感、节奏、默契、里程碑、未了事项）。"""

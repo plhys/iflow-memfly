@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -133,8 +134,11 @@ class Indexer:
         return {"processed": {}, "shadow_committed": {}}
 
     def _save_state(self) -> None:
-        with open(self._state_file, "w") as f:
+        # Atomic write: temp file + os.replace() to prevent corruption on crash
+        tmp_path = str(self._state_file) + ".tmp"
+        with open(tmp_path, "w") as f:
             json.dump(self._state, f, ensure_ascii=False)
+        os.replace(tmp_path, str(self._state_file))
 
     def get_new_messages(self, path: Path, source: str) -> tuple[list[dict], int]:
         """获取 session 文件中未处理的新消息（不推进状态）。
