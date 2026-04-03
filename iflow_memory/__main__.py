@@ -449,7 +449,13 @@ def cmd_query(args: argparse.Namespace) -> None:
         else:
             for r in results:
                 print(f"[{r['category']}] {r['text']}")
-                print(f"  创建: {r['created_at'][:10]} | 访问: {r['access_count']}次")
+                meta = f"  创建: {r['created_at'][:10]} | 访问: {r['access_count']}次"
+                if r.get('source_file'):
+                    src = r['source_file']
+                    if r.get('source_line') is not None:
+                        src += f":{r['source_line']}"
+                    meta += f" | 来源: {src}"
+                print(meta)
                 print()
 
 

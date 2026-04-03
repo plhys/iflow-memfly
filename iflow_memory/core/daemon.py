@@ -490,7 +490,9 @@ class MemoryDaemon:
                             logger.warning(f"[深度回忆] embedding 生成失败，降级写入: {e}")
 
                     count = self._write_memories_with_embeddings(
-                        classified, session_path, embeddings
+                        classified, session_path, embeddings,
+                        source_file=target_file.name,
+                        source_line=start_line,
                     )
                     logger.info(f"[分类记忆] 提取 {len(classified)} 条，写入 {count} 条")
                     if count > 0:
@@ -538,6 +540,8 @@ class MemoryDaemon:
     def _write_memories_with_embeddings(
         self, memories: list[dict], session_path: Path,
         embeddings: Optional[list[list[float]]] = None,
+        source_file: Optional[str] = None,
+        source_line: Optional[int] = None,
     ) -> int:
         """写入分类记忆，附带 embedding。"""
         if self.store is None:
@@ -555,6 +559,8 @@ class MemoryDaemon:
                     text=text,
                     source_session=session_path.name,
                     embedding=embedding,
+                    source_file=source_file,
+                    source_line=source_line,
                 )
                 count += 1
                 # 知识图谱：仅为新建的记忆创建关联

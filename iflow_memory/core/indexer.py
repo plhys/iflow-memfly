@@ -300,13 +300,17 @@ class Indexer:
         return recovered
 
     def write_classified_memories(
-        self, memories: list[dict], session_path: Path
+        self, memories: list[dict], session_path: Path,
+        source_file: Optional[str] = None,
+        source_line: Optional[int] = None,
     ) -> int:
         """Write classified memories to SQLite store (dual-write).
 
         Args:
             memories: list of {"category": str, "text": str} from summarizer
             session_path: source session file path
+            source_file: timeline 文件路径（如 2026-04-03.md），用于来源追踪
+            source_line: 在 timeline 文件中的起始行号
 
         Returns:
             Number of memories successfully written.
@@ -326,6 +330,8 @@ class Indexer:
                     category=category,
                     text=text,
                     source_session=session_path.name,
+                    source_file=source_file,
+                    source_line=source_line,
                 )
                 logger.info(
                     f"SQLite write: [{category}] {text[:80]}{'...' if len(text) > 80 else ''}"

@@ -371,7 +371,13 @@ def create_app(
                 lines = [f"找到 {len(results)} 条相关记忆（按相关度排序）："]
                 for i, r in enumerate(results, 1):
                     lines.append(f"#{i} [{r['category']}] {r['text']}")
-                    lines.append(f"  创建: {r['created_at'][:10]} | 访问: {r['access_count']}次")
+                    meta = f"  创建: {r['created_at'][:10]} | 访问: {r['access_count']}次"
+                    if r.get('source_file'):
+                        src = r['source_file']
+                        if r.get('source_line') is not None:
+                            src += f":{r['source_line']}"
+                        meta += f" | 来源: {src}"
+                    lines.append(meta)
                 text = "\n".join(lines)
 
             return {"content": [{"type": "text", "text": text}]}

@@ -117,7 +117,7 @@ def _cjk_ratio(text: str) -> float:
 
 
 # Current schema version — bump this when adding migrations
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _serialize_f32(vec: list[float]) -> bytes:
@@ -238,6 +238,8 @@ class MemoryStore:
             self._migrate_v5()
         if version < 6:
             self._migrate_v6()
+        if version < 7:
+            self._migrate_v7()
 
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -409,6 +411,27 @@ class MemoryStore:
             pass
         self._conn.commit()
 
+    def _migrate_v7(self) -> None:
+        """Migration v7: source_file and source_line columns for provenance tracking.
+
+        记录每条记忆的来源文件路径和行号，便于搜索结果定位原文。
+        旧数据的 source_file/source_line 为 NULL，属正常情况。
+        """
+        logger.info("Running migration v7: adding source_file and source_line columns")
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN source_file TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN source_line INTEGER DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        self._conn.commit()
+
     # ------------------------------------------------------------------
     # Seed memories (pre-installed lessons for new users)
     # ------------------------------------------------------------------
@@ -563,7 +586,9 @@ class MemoryStore:
 
     def add(self, category: str, text: str, source_session: str = "",
             embedding: Optional[list[float]] = None,
-            scope: str = "global") -> tuple[int, bool]:
+            scope: str = "global",
+            source_file: Optional[str] = None,
+            source_line: Optional[int] = None) -> tuple[int, bool]:
         """Insert a new memory, or return existing id if duplicate.
 
         Raises ValueError if category is invalid or text is empty.
@@ -616,9 +641,9 @@ class MemoryStore:
         now = datetime.now(timezone.utc).isoformat()
         embed_blob = _serialize_f32(embedding) if embedding else None
         cur = self._conn.execute(
-            """INSERT INTO memories (category, text, source_session, created_at, updated_at, embedding, scope)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (category, text, source_session, now, now, embed_blob, scope),
+            """INSERT INTO memories (category, text, source_session, created_at, updated_at, embedding, scope, source_file, source_line)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (category, text, source_session, now, now, embed_blob, scope, source_file, source_line),
         )
         row_id = cur.lastrowid
 
@@ -678,7 +703,7 @@ class MemoryStore:
         for fts_query in _build_fts_query(query):
             sql = """
                 SELECT m.id, m.category, m.text, m.created_at,
-                       m.access_count, rank
+                       m.access_count, m.source_file, m.source_line, rank
                 FROM memories_fts fts
                 JOIN memories m ON m.id = fts.rowid
                 WHERE memories_fts MATCH ?
@@ -707,7 +732,7 @@ class MemoryStore:
         if not rows:
             sql = """
                 SELECT id, category, text, created_at,
-                       access_count, 0 as rank
+                       access_count, source_file, source_line, 0 as rank
                 FROM memories
                 WHERE archived = 0
                   AND text LIKE ?
@@ -838,7 +863,8 @@ class MemoryStore:
         # 取完整记忆信息
         placeholders = ",".join("?" for _ in top_ids)
         rows = self._conn.execute(
-            f"""SELECT id, category, text, created_at, access_count
+            f"""SELECT id, category, text, created_at, access_count,
+                       source_file, source_line
                 FROM memories
                 WHERE id IN ({placeholders}) AND archived = 0""",
             top_ids,
