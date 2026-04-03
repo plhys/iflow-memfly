@@ -329,23 +329,26 @@ def create_app(
     _MCP_TOOLS = [
         {
             "name": "search_memory",
-            "description": (
-                "搜索 iFlow MemFly 记忆库。可按关键词搜索历史对话中提取的记忆"
-                "（身份、偏好、知识、事件、经验、纠正）。"
-                "当 AGENTS.md 中的记忆不够用、或需要查找更早的历史信息时使用。"
-            ),
+            "description": "搜索 iFlow MemFly 记忆库。查找历史信息的首选工具，优先于 grep 或 read_file。支持向量语义搜索 + 全文检索混合排序，结果按相关度从高到低排列。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"},
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词：提取 2-4 个核心名词，不要用完整句子。示例：用户问'今天上午的评测报告' → query='评测报告'",
+                    },
                     "category": {
                         "type": "string",
-                        "description": "可选：按分类过滤（identity/preference/entity/event/insight/correction）",
+                        "description": "按分类过滤。identity=身份, preference=偏好, entity=知识/事实, event=事件/操作记录, insight=经验教训, correction=纠正。不确定时不填",
                     },
                     "limit": {
                         "type": "integer",
                         "description": "返回结果数量，默认 10",
                         "default": 10,
+                    },
+                    "date_from": {
+                        "type": "string",
+                        "description": "日期过滤，格式 YYYY-MM-DD。用户提到时间词时必须填写：今天→当天日期，昨天→前一天，上周→7天前。示例：'今天上午' → date_from='2026-04-03'",
                     },
                 },
                 "required": ["query"],
@@ -388,6 +391,7 @@ def create_app(
             query = args.get("query", "")
             category = args.get("category")
             limit = args.get("limit", 10)
+            date_from = args.get("date_from")
             if not query:
                 return {"content": [{"type": "text", "text": "请提供搜索关键词"}], "isError": True}
 
@@ -404,13 +408,14 @@ def create_app(
             results = store_.hybrid_search(
                 query, query_embedding=query_embedding,
                 category=category, limit=limit,
+                date_from=date_from,
             )
             if not results:
-                text = f"未找到与「{query}」相关的记忆"
+                text = f"未找到与「{query}」相关的记忆。建议：换同义词重试，或去掉 category/date_from 过滤扩大范围"
             else:
-                lines = []
-                for r in results:
-                    lines.append(f"[{r['category']}] {r['text']}")
+                lines = [f"找到 {len(results)} 条相关记忆（按相关度排序）："]
+                for i, r in enumerate(results, 1):
+                    lines.append(f"#{i} [{r['category']}] {r['text']}")
                     lines.append(f"  创建: {r['created_at'][:10]} | 访问: {r['access_count']}次")
                 text = "\n".join(lines)
 

@@ -45,11 +45,11 @@ def _handle_tools_list(msg):
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "搜索关键词，建议 2-4 个核心名词（如「MemFly 评测」「Cloudflare 配置」），不要用完整句子",
+                        "description": "搜索关键词：提取 2-4 个核心名词，不要用完整句子。示例：用户问'今天上午的评测报告' → query='评测报告'",
                     },
                     "category": {
                         "type": "string",
-                        "description": "按分类过滤，可大幅提升精度。identity=身份, preference=偏好, entity=知识/事实, event=事件, insight=经验教训, correction=纠正",
+                        "description": "按分类过滤。identity=身份, preference=偏好, entity=知识/事实, event=事件/操作记录, insight=经验教训, correction=纠正。不确定时不填",
                     },
                     "limit": {
                         "type": "integer",
@@ -58,7 +58,7 @@ def _handle_tools_list(msg):
                     },
                     "date_from": {
                         "type": "string",
-                        "description": "按日期过滤，只返回该日期及之后的记忆，格式 YYYY-MM-DD",
+                        "description": "日期过滤，格式 YYYY-MM-DD。用户提到时间词时必须填写：今天→当天日期，昨天→前一天，上周→7天前。示例：'今天上午' → date_from='2026-04-03'",
                     },
                 },
                 "required": ["query"],

@@ -661,33 +661,47 @@ class MemoryStore:
         if not query:
             return []
 
-        # Phase 1: FTS5 MATCH (escape special chars by quoting)
-        fts_query = '"' + query.replace('"', '""') + '"'
-        sql = """
-            SELECT m.id, m.category, m.text, m.created_at,
-                   m.access_count, rank
-            FROM memories_fts fts
-            JOIN memories m ON m.id = fts.rowid
-            WHERE memories_fts MATCH ?
-              AND m.archived = 0
-        """
-        params: list = [fts_query]
-        if category:
-            sql += "  AND m.category = ?\n"
-            params.append(category)
-        if scope is not None:
-            sql += "  AND m.scope = ?\n"
-            params.append(scope)
-        if date_from is not None:
-            sql += "  AND m.created_at >= ?\n"
-            params.append(date_from)
-        sql += "ORDER BY rank\nLIMIT ?"
-        params.append(limit)
+        # Phase 1: FTS5 MATCH — 先精确短语，无结果则拆词 OR
+        def _build_fts_query(q: str) -> list[str]:
+            """返回多个 FTS5 查询候选，优先级从高到低。"""
+            escaped = q.replace('"', '""')
+            candidates = [f'"{escaped}"']  # 精确短语
+            # 按空格拆词，用 OR 扩大召回
+            parts = q.split()
+            if len(parts) > 1:
+                or_terms = " OR ".join(f'"{p.replace(chr(34), chr(34)*2)}"' for p in parts if len(p) >= 2)
+                if or_terms:
+                    candidates.append(or_terms)
+            return candidates
 
-        try:
-            rows = self._conn.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:
-            rows = []
+        rows = []
+        for fts_query in _build_fts_query(query):
+            sql = """
+                SELECT m.id, m.category, m.text, m.created_at,
+                       m.access_count, rank
+                FROM memories_fts fts
+                JOIN memories m ON m.id = fts.rowid
+                WHERE memories_fts MATCH ?
+                  AND m.archived = 0
+            """
+            params: list = [fts_query]
+            if category:
+                sql += "  AND m.category = ?\n"
+                params.append(category)
+            if scope is not None:
+                sql += "  AND m.scope = ?\n"
+                params.append(scope)
+            if date_from is not None:
+                sql += "  AND m.created_at >= ?\n"
+                params.append(date_from)
+            sql += "ORDER BY rank\nLIMIT ?"
+            params.append(limit)
+            try:
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+            if rows:
+                break  # 精确匹配有结果就用，否则降级到 OR
 
         # Phase 2: LIKE fallback when FTS5 returns nothing
         if not rows:
