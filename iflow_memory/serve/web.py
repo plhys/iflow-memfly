@@ -394,6 +394,18 @@ def create_app(
                 text = "\n".join(recent) if recent else "暂无对话索引"
             return {"content": [{"type": "text", "text": text}]}
 
+        elif tool_name == "save_memory":
+            daemon = getattr(app.state, "daemon", None)
+            if daemon:
+                try:
+                    result = await daemon.flush_now()
+                    text = f"记忆已保存。处理了 {result.get('processed', 0)} 条消息，AGENTS.md 已更新。"
+                except Exception as e:
+                    text = f"记忆保存失败: {e}"
+            else:
+                text = "daemon 未连接，无法立即保存。记忆将在下次 daemon 处理周期自动保存。"
+            return {"content": [{"type": "text", "text": text}]}
+
         else:
             return {"content": [{"type": "text", "text": f"未知工具: {tool_name}"}], "isError": True}
 
