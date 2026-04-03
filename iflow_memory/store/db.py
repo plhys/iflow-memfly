@@ -941,11 +941,11 @@ class MemoryStore:
 
         return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
-    def get_top_memories(self, limit: int = 40, scope: str | None = None) -> list[dict]:
+    def get_top_memories(self, limit: int = 50, scope: str | None = None) -> list[dict]:
         """Get top memories for injection into AGENTS.md.
 
         三阶段选择：
-        1. 身份锚定 — identity/preference/correction 按 hotness 排序取 top-N（冷记忆沉底但仍可搜索）
+        1. 身份锚定 — identity/correction 按时间倒序（豁免 hotness），preference 按 hotness 排序
         2. 热度排序 — entity/event/insight 按 hotness 填充剩余名额
         3. 图谱扩展 — 对入选记忆做一跳关联，把高关联但未入选的记忆补进来
 
@@ -957,16 +957,25 @@ class MemoryStore:
         seen_ids: set[int] = set()
         remaining = limit
 
-        # Phase 1: 身份锚定 — 按 hotness 排序，冷记忆沉底不注入
+        # Phase 1: 身份锚定
+        # identity/correction 豁免 hotness（纠错和身份天然低频但极重要，按时间倒序取）
+        # preference 按 hotness 排序（偏好有冷热之分）
         for cat in ("identity", "preference", "correction"):
             cap = min(8, remaining)
-            # 多取一些候选，按 hotness 排序后只取 top-N
-            rows = self.get_by_category(cat, limit=50, scope=scope)
-            for r in rows:
-                r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
-                r["age_days"] = self._calc_age_days(r["updated_at"])
-            rows.sort(key=lambda r: r["hotness"], reverse=True)
-            top_rows = rows[:cap]
+            if cat == "preference":
+                # preference 按 hotness 排序，冷偏好沉底
+                rows = self.get_by_category(cat, limit=50, scope=scope)
+                for r in rows:
+                    r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
+                    r["age_days"] = self._calc_age_days(r["updated_at"])
+                rows.sort(key=lambda r: r["hotness"], reverse=True)
+                top_rows = rows[:cap]
+            else:
+                # identity/correction 按时间倒序（get_by_category 默认排序），不看 hotness
+                top_rows = self.get_by_category(cat, limit=cap, scope=scope)
+                for r in top_rows:
+                    r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
+                    r["age_days"] = self._calc_age_days(r["updated_at"])
             for r in top_rows:
                 seen_ids.add(r["id"])
             result.extend(top_rows)
