@@ -406,6 +406,24 @@ class MemoryDaemon:
                 logger.info(f"Initial processing: {path.name} ({len(new_msgs)} msgs)")
                 await self._process_messages(new_msgs, path, source, total_count)
 
+    @staticmethod
+    def _is_heartbeat_only(messages: list[dict]) -> bool:
+        """判断一批消息是否全部是心跳消息（无实质内容）。"""
+        for msg in messages:
+            text = msg.get("text", "").strip()
+            if not text:
+                continue
+            upper = text.upper()
+            # 用户侧：包含 HEARTBEAT 指令
+            if msg["role"] in ("user", "human") and "HEARTBEAT" in upper:
+                continue
+            # AI 侧：仅回复 HEARTBEAT_OK
+            if msg["role"] in ("model", "assistant") and upper == "HEARTBEAT_OK":
+                continue
+            # 有任何非心跳内容，就不是纯心跳
+            return False
+        return True
+
     async def _process_messages(
         self, messages: list[dict], session_path: Path,
         source: str, total_count: int,
@@ -415,6 +433,17 @@ class MemoryDaemon:
         L3 成功后推进状态，后续 LLM 失败不阻塞——原始数据已持久化。
         """
         features = self.config.features
+
+        # 心跳过滤：纯心跳消息只做 L3 记录，跳过所有 LLM 处理
+        if self._is_heartbeat_only(messages):
+            try:
+                result = self.indexer.write_cleaned_messages(messages, session_path)
+                if result:
+                    self.indexer.commit_progress(session_path, total_count)
+                    logger.debug(f"[心跳过滤] 跳过 LLM 处理: {session_path.name}")
+            except Exception as e:
+                logger.error(f"[记忆守护] 心跳 L3 写入异常: {e}")
+            return
 
         # L3：写入清洗后的对话记录
         try:

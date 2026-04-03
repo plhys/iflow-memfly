@@ -30,6 +30,17 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("private_key", re.compile(r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----')),
     ("hex_secret", re.compile(r'(?<![A-Za-z0-9])(?<!commit )(?<!hash )[0-9a-fA-F]{32,64}(?![A-Za-z0-9])')),
     ("app_id",     re.compile(r'cli_[a-f0-9]{16,}')),
+    # GitHub PAT (classic & fine-grained)
+    ("github_pat", re.compile(r'ghp_[A-Za-z0-9]{36,}')),
+    ("github_oauth", re.compile(r'gho_[A-Za-z0-9]{36,}')),
+    ("github_fine", re.compile(r'github_pat_[A-Za-z0-9]{22,}')),
+    # OpenAI / Anthropic / common AI API keys
+    ("openai_key", re.compile(r'sk-[A-Za-z0-9]{32,}')),
+    ("anthropic_key", re.compile(r'sk-ant-[A-Za-z0-9\-]{32,}')),
+    # AWS keys
+    ("aws_key",    re.compile(r'AKIA[A-Z0-9]{16}')),
+    # Cloudflare API tokens
+    ("cf_token",   re.compile(r'[A-Za-z0-9_\-]{40}(?=.*cloudflare)', re.IGNORECASE)),
 ]
 
 
@@ -48,6 +59,13 @@ def _redact_secrets(text: str) -> tuple[str, bool]:
         "private_key": lambda _: "[REDACTED PRIVATE KEY]",
         "hex_secret":  lambda _: "[REDACTED]",
         "app_id":      lambda _: "[REDACTED_APP_ID]",
+        "github_pat":  lambda _: "ghp_[REDACTED]",
+        "github_oauth": lambda _: "gho_[REDACTED]",
+        "github_fine": lambda _: "github_pat_[REDACTED]",
+        "openai_key":  lambda _: "sk-[REDACTED]",
+        "anthropic_key": lambda _: "sk-ant-[REDACTED]",
+        "aws_key":     lambda _: "AKIA[REDACTED]",
+        "cf_token":    lambda _: "[REDACTED_CF_TOKEN]",
     }
     redacted = False
     result = text
