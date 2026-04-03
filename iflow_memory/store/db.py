@@ -647,12 +647,13 @@ class MemoryStore:
         category: str | None = None,
         limit: int = 10,
         scope: str | None = None,
+        date_from: str | None = None,
     ) -> list[dict]:
         """Full-text search across memories with LIKE fallback.
 
         First tries FTS5 MATCH (trigram). If no results, falls back to
         LIKE query which handles short keywords better.
-        Optionally filter by category and/or scope. Returns list of dicts with
+        Optionally filter by category, scope, and/or date_from. Returns list of dicts with
         id, category, text, created_at, access_count, rank.
         Increments access_count for all returned results.
         """
@@ -677,6 +678,9 @@ class MemoryStore:
         if scope is not None:
             sql += "  AND m.scope = ?\n"
             params.append(scope)
+        if date_from is not None:
+            sql += "  AND m.created_at >= ?\n"
+            params.append(date_from)
         sql += "ORDER BY rank\nLIMIT ?"
         params.append(limit)
 
@@ -701,6 +705,9 @@ class MemoryStore:
             if scope is not None:
                 sql += "  AND scope = ?\n"
                 params.append(scope)
+            if date_from is not None:
+                sql += "  AND created_at >= ?\n"
+                params.append(date_from)
             sql += "ORDER BY updated_at DESC\nLIMIT ?"
             params.append(limit)
             rows = self._conn.execute(sql, params).fetchall()
@@ -719,6 +726,7 @@ class MemoryStore:
         category: str | None = None,
         limit: int = 10,
         scope: str | None = None,
+        date_from: str | None = None,
     ) -> list[dict]:
         """深度回忆 — FTS5 + Vector RRF 融合搜索。
 
@@ -738,7 +746,7 @@ class MemoryStore:
         )
 
         if not use_vec:
-            return self.search(query, category=category, limit=limit, scope=scope)
+            return self.search(query, category=category, limit=limit, scope=scope, date_from=date_from)
 
         # CJK 自适应权重
         cjk_ratio = _cjk_ratio(query)
@@ -750,7 +758,7 @@ class MemoryStore:
         k = 60  # RRF 常数
 
         # === FTS5 路 ===
-        fts_results = self.search(query, category=category, limit=limit * 2, scope=scope)
+        fts_results = self.search(query, category=category, limit=limit * 2, scope=scope, date_from=date_from)
         fts_ranks: dict[int, int] = {}
         for rank, r in enumerate(fts_results, 1):
             fts_ranks[r["id"]] = rank
@@ -770,7 +778,7 @@ class MemoryStore:
                 vec_sql, (_serialize_f32(query_embedding), vec_limit)
             ).fetchall()
 
-            # 过滤已归档的，以及按 category/scope 筛选
+            # 过滤已归档的，以及按 category/scope/date_from 筛选
             active = []
             for vr in vec_rows:
                 filter_sql = "SELECT id FROM memories WHERE id = ? AND archived = 0"
@@ -781,6 +789,9 @@ class MemoryStore:
                 if scope is not None:
                     filter_sql += " AND scope = ?"
                     filter_params.append(scope)
+                if date_from is not None:
+                    filter_sql += " AND created_at >= ?"
+                    filter_params.append(date_from)
                 mem = self._conn.execute(filter_sql, filter_params).fetchone()
                 if mem:
                     active.append(vr)
@@ -908,7 +919,7 @@ class MemoryStore:
 
         # Phase 1: 身份锚定 — 这些类别定义"我是谁"，全量纳入
         for cat in ("identity", "preference", "correction"):
-            cap = min(20, remaining)
+            cap = min(15, remaining)
             rows = self.get_by_category(cat, limit=cap, scope=scope)
             for r in rows:
                 r["hotness"] = hotness_score(r["access_count"], r["updated_at"])

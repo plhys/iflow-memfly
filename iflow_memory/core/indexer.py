@@ -357,10 +357,10 @@ class Indexer:
         lines = [f"\n## [{ts}] {session_path.stem}\n"]
         for msg in messages:
             role_label = "用户" if msg["role"] in ("user", "human") else "AI"
-            # 截断过长的单条消息
+            # 截断过长的单条消息（L3 兜底层，保留更多原始内容）
             text = msg["text"]
-            if len(text) > 500:
-                text = text[:500] + "..."
+            if len(text) > 2000:
+                text = text[:2000] + "..."
             lines.append(f"**{role_label}**: {text}\n")
 
         with open(summary_file, "a", encoding="utf-8") as f:

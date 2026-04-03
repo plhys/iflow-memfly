@@ -135,6 +135,11 @@ class MemoryInjector:
         lines.append("> 不要等用户提醒，不要跳过自检。")
         lines.append("")
 
+        lines.append("> **记忆搜索规范（强制）**：查找历史信息时，**必须先用 search_memory**，禁止直接 grep 文件或翻日志。")
+        lines.append("> category 过滤：身份=identity, 偏好=preference, 事件=event, 知识=entity, 教训=insight, 纠正=correction")
+        lines.append("> 搜索技巧：用 2-4 个核心名词，不要用完整句子。信任结果排序，不需要二次验证。只有 search_memory 返回「未找到」时才降级到文件搜索。")
+        lines.append("")
+
         # 时间感知锚点：让 AI 知道"现在几点"和"距上次对话多久"
         time_anchor = self._build_time_anchor(now)
         if time_anchor:
@@ -151,7 +156,7 @@ class MemoryInjector:
             lines.append("")
 
         # Recent conversation context from index.md
-        recent = self._get_recent_index(10, channel_filter=channel_filter)
+        recent = self._get_recent_index(5, channel_filter=channel_filter)
         if recent:
             lines.append("**最近对话**")
             for entry in recent:
