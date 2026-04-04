@@ -46,12 +46,13 @@ class MemoryConfig:
         "summary": True,
         "classify": True,
         "atmosphere": True,
-        "state_snapshot": True,
         "daily_recap": True,
         "vector_search": True,
-        "knowledge_graph": True,
-        "daily_briefing": True,
-        "llm_dream": False,  # LLM 深度记忆整合（子代理做梦），默认关闭
+        # 以下功能默认关闭，避免冗余
+        "state_snapshot": False,   # 已合并到 atmosphere
+        "daily_briefing": False,   # 已合并到 daily_recap（昨日重现）
+        "knowledge_graph": False,  # 需要向量搜索，普通场景用不到
+        "llm_dream": False,        # LLM 深度记忆整合，默认关闭
     })
 
     # 深度回忆 — embedding 配置
