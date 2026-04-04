@@ -46,6 +46,7 @@ class MemoryDaemon:
         self._process_task: asyncio.Task | None = None
         self._last_activity: dict[str, float] = {}  # session_key -> timestamp
         self._idle_flushed: set[str] = set()  # 已 idle-flush 的 session
+        self._llm_retry_queue: list[tuple[list[dict], Path, str]] = []  # LLM 失败重试队列
 
     async def start(self) -> None:
         """初始化守护进程：健康自检 + embedder 初始化。"""
@@ -366,10 +367,51 @@ class MemoryDaemon:
     async def _flush_pending(self) -> None:
         """处理所有待处理的消息。"""
         if not self._pending:
-            return
-        batch, self._pending = self._pending, {}
-        for messages, session_path, source, total_count in batch.values():
-            await self._process_messages(messages, session_path, source, total_count)
+            pass
+        else:
+            batch, self._pending = self._pending, {}
+            for messages, session_path, source, total_count in batch.values():
+                await self._process_messages(messages, session_path, source, total_count)
+
+        # 处理 LLM 重试队列（L3 已写入，只重试 LLM 步骤）
+        if self._llm_retry_queue:
+            retry_batch = self._llm_retry_queue[:]
+            self._llm_retry_queue.clear()
+            logger.info(f"[LLM 重试] 处理 {len(retry_batch)} 个待重试 session")
+            for messages, session_path, source in retry_batch:
+                await self._retry_llm_steps(messages, session_path, source)
+
+    async def _retry_llm_steps(
+        self, messages: list[dict], session_path: Path, source: str,
+    ) -> None:
+        """重试 LLM 步骤（L3 已写入，只做分类记忆提取）。"""
+        features = self.config.features
+        llm_ok = 0
+
+        # 只重试分类记忆（最重要的 LLM 步骤）
+        if features.get("classify", True):
+            try:
+                classified = await self.summarizer.generate_classified_memories(messages)
+                if classified:
+                    embeddings = None
+                    if self.embedder and self.embedder.available:
+                        try:
+                            texts = [m["text"] for m in classified]
+                            embeddings = await self.embedder.embed_batch(texts)
+                        except Exception as e:
+                            logger.warning(f"[LLM 重试] embedding 失败: {e}")
+                    count = self._write_memories_with_embeddings(
+                        classified, session_path, embeddings,
+                    )
+                    logger.info(f"[LLM 重试] 成功提取 {len(classified)} 条，写入 {count} 条")
+                    llm_ok += 1
+                    self.injector.inject()
+            except Exception as e:
+                logger.error(f"[LLM 重试] 分类记忆提取异常: {e}")
+
+        if llm_ok == 0 and len(self._llm_retry_queue) < 20:
+            self._llm_retry_queue.append((messages, session_path, source))
+            logger.warning(f"[LLM 重试] 仍然失败，重新入队")
 
     async def flush_now(self) -> dict:
         """手动触发：立即处理所有 pending 消息并注入。
@@ -456,6 +498,9 @@ class MemoryDaemon:
         target_file, start_line = result
         self.indexer.commit_progress(session_path, total_count)
 
+        # LLM 步骤：跟踪成功数，全部失败则加入重试队列
+        llm_ok = 0
+
         # L1：索引短句
         if features.get("index_line", True):
             try:
@@ -463,6 +508,7 @@ class MemoryDaemon:
                 if index_line:
                     self.indexer.update_index(index_line, target_file, start_line, source=source)
                     logger.info(f"[L1 索引] {index_line[:60]}")
+                    llm_ok += 1
             except Exception as e:
                 logger.error(f"[记忆守护] L1 索引生成异常: {e}")
 
@@ -473,6 +519,7 @@ class MemoryDaemon:
                 if structured:
                     self.indexer.append_structured_summary(structured, target_file)
                     logger.info(f"[L2 摘要] {len(structured)} 字符")
+                    llm_ok += 1
             except Exception as e:
                 logger.error(f"[记忆守护] L2 摘要生成异常: {e}")
 
@@ -495,6 +542,7 @@ class MemoryDaemon:
                         source_line=start_line,
                     )
                     logger.info(f"[分类记忆] 提取 {len(classified)} 条，写入 {count} 条")
+                    llm_ok += 1
                     if count > 0:
                         result = self.injector.inject()
                         logger.info(f"[记忆注入] 更新 {len(result['updated'])} 个文件，{result['memories_count']} 条记忆")
@@ -532,10 +580,20 @@ class MemoryDaemon:
                         critical_context=state["critical_context"],
                     )
                     logger.info(f"[状态快照] goal={state['goal'][:60]}...")
+                    llm_ok += 1
                     result = self.injector.inject()
                     logger.info(f"[记忆注入] 状态快照触发更新 {len(result['updated'])} 个文件")
             except Exception as e:
                 logger.error(f"[记忆守护] 状态快照生成异常: {e}")
+
+        # LLM 全部失败时加入重试队列（L3 已写入，只需重试 LLM 步骤）
+        if llm_ok == 0:
+            if len(self._llm_retry_queue) < 20:  # 防止无限堆积
+                self._llm_retry_queue.append((messages, session_path, source))
+                logger.warning(
+                    f"[记忆守护] LLM 全部失败，加入重试队列 "
+                    f"(队列长度: {len(self._llm_retry_queue)})"
+                )
 
     def _write_memories_with_embeddings(
         self, memories: list[dict], session_path: Path,
