@@ -177,6 +177,27 @@ class MemoryDaemon:
         if self.config.features.get("daily_briefing", True):
             await self._generate_daily_briefing()
 
+        # Embedding 补算：为之前 embedding 失败的记忆重新生成向量
+        if self.embedder and self.embedder.available:
+            pending = self.store.get_needs_embed(limit=50)
+            if pending:
+                texts = [m["text"] for m in pending]
+                try:
+                    embeddings = await self.embedder.embed_batch(texts)
+                    if embeddings:
+                        backfilled = 0
+                        for i, mem in enumerate(pending):
+                            if i < len(embeddings) and embeddings[i]:
+                                try:
+                                    self.store.update_embedding(mem["id"], embeddings[i])
+                                    backfilled += 1
+                                except Exception as e:
+                                    logger.warning(f"[维护] embedding 补写失败 #{mem['id']}: {e}")
+                        if backfilled:
+                            logger.info(f"[维护] embedding 补算完成: {backfilled}/{len(pending)} 条")
+                except Exception as e:
+                    logger.warning(f"[维护] embedding 批量补算失败: {e}")
+
         self.store.checkpoint()
 
     def _dream_consolidate(self, similarity_threshold: float = 0.75) -> int:

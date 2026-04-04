@@ -48,13 +48,39 @@ class TestHotnessScore:
         assert s_fresh > s_week > s_month
 
     def test_14_day_halflife(self):
-        """14 天后 decay 因子应约为 0.5。"""
+        """14 天后 decay 因子应约为 0.5（短期类别）。"""
         now = datetime.now(timezone.utc)
         two_weeks_ago = (now - timedelta(days=14)).isoformat()
         # access_count=0 时 popularity = sigmoid(0) = 0.5
         score = hotness_score(0, two_weeks_ago)
         expected = 0.5 * 0.5  # popularity(0.5) * decay(0.5)
         assert abs(score - expected) < 0.02
+
+    def test_category_long_halflife(self):
+        """identity/correction/preference 使用 90 天半衰期，衰减更慢。"""
+        now = datetime.now(timezone.utc)
+        month_old = (now - timedelta(days=30)).isoformat()
+        # 同样 30 天前，identity 应比 event 分数高
+        s_identity = hotness_score(3, month_old, category="identity")
+        s_event = hotness_score(3, month_old, category="event")
+        assert s_identity > s_event
+
+    def test_category_short_halflife(self):
+        """entity/event/insight 使用 14 天半衰期（默认行为）。"""
+        now = datetime.now(timezone.utc)
+        two_weeks_ago = (now - timedelta(days=14)).isoformat()
+        # entity 14 天后 decay ≈ 0.5
+        score = hotness_score(0, two_weeks_ago, category="entity")
+        expected = 0.5 * 0.5
+        assert abs(score - expected) < 0.02
+
+    def test_category_none_uses_short(self):
+        """category=None 应使用短半衰期（向后兼容）。"""
+        now = datetime.now(timezone.utc)
+        two_weeks_ago = (now - timedelta(days=14)).isoformat()
+        s_none = hotness_score(0, two_weeks_ago, category=None)
+        s_event = hotness_score(0, two_weeks_ago, category="event")
+        assert abs(s_none - s_event) < 0.001
 
     def test_invalid_date_fallback(self):
         """无效日期应回退到 30 天老（不崩溃）。"""
@@ -180,3 +206,62 @@ class TestMemoryStoreCRUD:
             s.add("entity", "context manager test")
             results = s.search("context manager")
             assert len(results) >= 1
+
+
+class TestNeedsEmbed:
+    """Tests for embedding backfill (needs_embed flag)."""
+
+    def test_needs_embed_not_set_without_vec(self, store):
+        """非向量模式下，needs_embed 应始终为 0。"""
+        store.add("entity", "test no vec mode")
+        row = store._conn.execute(
+            "SELECT needs_embed FROM memories WHERE text = 'test no vec mode'"
+        ).fetchone()
+        assert row["needs_embed"] == 0
+
+    def test_needs_embed_set_when_vec_enabled(self, tmp_path):
+        """向量模式下，embedding 为 None 时应设置 needs_embed=1。"""
+        db = tmp_path / "vec_test.db"
+        # embed_dim > 0 但不一定能真正启用 sqlite-vec
+        s = MemoryStore(db, embed_dim=0)
+        # 模拟 vec_enabled
+        s._vec_enabled = True
+        s.add("entity", "needs embed test", embedding=None)
+        row = s._conn.execute(
+            "SELECT needs_embed FROM memories WHERE text = 'needs embed test'"
+        ).fetchone()
+        assert row["needs_embed"] == 1
+        s.close()
+
+    def test_get_needs_embed(self, store):
+        """get_needs_embed 应返回标记为待补算的记忆。"""
+        # 手动插入带 needs_embed=1 的记忆
+        store._conn.execute(
+            "INSERT INTO memories (category, text, created_at, updated_at, needs_embed) VALUES (?, ?, ?, ?, ?)",
+            ("entity", "backfill me", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", 1),
+        )
+        store._conn.commit()
+        pending = store.get_needs_embed()
+        assert len(pending) >= 1
+        assert any(m["text"] == "backfill me" for m in pending)
+
+    def test_update_embedding_clears_flag(self, store):
+        """update_embedding 应写入向量并清除 needs_embed 标记。"""
+        store._conn.execute(
+            "INSERT INTO memories (category, text, created_at, updated_at, needs_embed) VALUES (?, ?, ?, ?, ?)",
+            ("entity", "update embed test", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", 1),
+        )
+        store._conn.commit()
+        row = store._conn.execute(
+            "SELECT id FROM memories WHERE text = 'update embed test'"
+        ).fetchone()
+        mem_id = row["id"]
+
+        fake_embedding = [0.1] * 128
+        store.update_embedding(mem_id, fake_embedding)
+
+        updated = store._conn.execute(
+            "SELECT needs_embed, embedding FROM memories WHERE id = ?", (mem_id,)
+        ).fetchone()
+        assert updated["needs_embed"] == 0
+        assert updated["embedding"] is not None

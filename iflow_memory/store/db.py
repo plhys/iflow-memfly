@@ -117,7 +117,12 @@ def _cjk_ratio(text: str) -> float:
 
 
 # Current schema version — bump this when adding migrations
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+# 半衰期配置（天）——按类别区分
+_HALFLIFE_LONG = 90.0   # identity / correction / preference（长期事实）
+_HALFLIFE_SHORT = 14.0  # entity / event / insight（短期事件）
+_LONG_LIFE_CATEGORIES = frozenset({"identity", "correction", "preference"})
 
 
 def _serialize_f32(vec: list[float]) -> bytes:
@@ -131,19 +136,29 @@ def _deserialize_f32(blob: bytes) -> list[float]:
     return list(struct.unpack(f"<{n}f", blob))
 
 
-def hotness_score(access_count: int, updated_at: str) -> float:
+def hotness_score(access_count: int, updated_at: str,
+                   category: str | None = None) -> float:
     """Calculate hotness score for memory ranking.
 
-    Formula: sigmoid(log1p(access_count)) * exp(-0.693 * age_days / 14)
+    Formula: sigmoid(log1p(access_count)) * exp(-0.693 * age_days / halflife)
 
     The sigmoid of log1p(access_count) gives a 0–1 popularity factor that
     grows quickly for the first few accesses then saturates.
-    The exponential decay halves the score every 14 days since last update.
+    The exponential decay halves the score every *halflife* days since last
+    update.  ``halflife`` depends on category:
+      - identity / correction / preference → 90 days (long-term facts)
+      - entity / event / insight (default) → 14 days (short-term events)
     """
     # Popularity factor
     popularity = 1.0 / (1.0 + math.exp(-math.log1p(access_count)))
 
-    # Age decay
+    # Age decay — halflife varies by category
+    halflife = (
+        _HALFLIFE_LONG
+        if category and category in _LONG_LIFE_CATEGORIES
+        else _HALFLIFE_SHORT
+    )
+
     try:
         updated = datetime.fromisoformat(updated_at)
         if updated.tzinfo is None:
@@ -152,7 +167,7 @@ def hotness_score(access_count: int, updated_at: str) -> float:
     except (ValueError, TypeError):
         age_days = 30.0  # fallback: treat as old
 
-    decay = math.exp(-0.693 * age_days / 14.0)
+    decay = math.exp(-0.693 * age_days / halflife)
 
     return popularity * decay
 
@@ -240,6 +255,8 @@ class MemoryStore:
             self._migrate_v6()
         if version < 7:
             self._migrate_v7()
+        if version < 8:
+            self._migrate_v8()
 
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -427,6 +444,21 @@ class MemoryStore:
         try:
             self._conn.execute(
                 "ALTER TABLE memories ADD COLUMN source_line INTEGER DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        self._conn.commit()
+
+    def _migrate_v8(self) -> None:
+        """Migration v8: needs_embed column for deferred embedding.
+
+        当 embedding 生成失败时，记忆仍写入 SQLite 但标记 needs_embed=1，
+        由 daemon 维护周期补算 embedding。
+        """
+        logger.info("Running migration v8: adding needs_embed column")
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN needs_embed INTEGER DEFAULT 0"
             )
         except sqlite3.OperationalError:
             pass  # 列已存在
@@ -640,10 +672,11 @@ class MemoryStore:
 
         now = datetime.now(timezone.utc).isoformat()
         embed_blob = _serialize_f32(embedding) if embedding else None
+        needs_embed = 1 if (embed_blob is None and self._vec_enabled) else 0
         cur = self._conn.execute(
-            """INSERT INTO memories (category, text, source_session, created_at, updated_at, embedding, scope, source_file, source_line)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (category, text, source_session, now, now, embed_blob, scope, source_file, source_line),
+            """INSERT INTO memories (category, text, source_session, created_at, updated_at, embedding, scope, source_file, source_line, needs_embed)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (category, text, source_session, now, now, embed_blob, scope, source_file, source_line, needs_embed),
         )
         row_id = cur.lastrowid
 
@@ -966,7 +999,7 @@ class MemoryStore:
                 # preference 按 hotness 排序，冷偏好沉底
                 rows = self.get_by_category(cat, limit=50, scope=scope)
                 for r in rows:
-                    r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
+                    r["hotness"] = hotness_score(r["access_count"], r["updated_at"], category=cat)
                     r["age_days"] = self._calc_age_days(r["updated_at"])
                 rows.sort(key=lambda r: r["hotness"], reverse=True)
                 top_rows = rows[:cap]
@@ -974,7 +1007,7 @@ class MemoryStore:
                 # identity/correction 按时间倒序（get_by_category 默认排序），不看 hotness
                 top_rows = self.get_by_category(cat, limit=cap, scope=scope)
                 for r in top_rows:
-                    r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
+                    r["hotness"] = hotness_score(r["access_count"], r["updated_at"], category=cat)
                     r["age_days"] = self._calc_age_days(r["updated_at"])
             for r in top_rows:
                 seen_ids.add(r["id"])
@@ -991,7 +1024,7 @@ class MemoryStore:
             for r in rows:
                 if r["id"] in seen_ids:
                     continue
-                r["hotness"] = hotness_score(r["access_count"], r["updated_at"])
+                r["hotness"] = hotness_score(r["access_count"], r["updated_at"], category=cat)
                 r["age_days"] = self._calc_age_days(r["updated_at"])
                 candidates.append(r)
 
@@ -1083,7 +1116,7 @@ class MemoryStore:
         results = []
         for r in rows:
             d = dict(r)
-            d["hotness"] = hotness_score(d["access_count"], d["updated_at"])
+            d["hotness"] = hotness_score(d["access_count"], d["updated_at"], category=d.get("category"))
             d["age_days"] = self._calc_age_days(d["updated_at"])
             d["via_graph"] = True  # 标记为图谱扩展来的
             results.append(d)
@@ -1107,6 +1140,40 @@ class MemoryStore:
                 WHERE id IN ({placeholders})""",
             [now] + ids,
         )
+        self._conn.commit()
+
+    def get_needs_embed(self, limit: int = 50) -> list[dict]:
+        """返回 needs_embed=1 的记忆列表（待补算 embedding）。"""
+        rows = self._conn.execute(
+            """SELECT id, category, text
+               FROM memories
+               WHERE needs_embed = 1 AND archived = 0
+               ORDER BY id ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_embedding(self, memory_id: int, embedding: list[float]) -> None:
+        """更新指定记忆的 embedding 并清除 needs_embed 标记。"""
+        embed_blob = _serialize_f32(embedding)
+        self._conn.execute(
+            "UPDATE memories SET embedding = ?, needs_embed = 0 WHERE id = ?",
+            (embed_blob, memory_id),
+        )
+        # 同步写入向量索引
+        if self._vec_enabled:
+            try:
+                # 先尝试删除旧的向量（如果存在）
+                self._conn.execute(
+                    "DELETE FROM memories_vec WHERE rowid = ?", (memory_id,)
+                )
+                self._conn.execute(
+                    "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+                    (memory_id, embed_blob),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update vec for memory #{memory_id}: {e}")
         self._conn.commit()
 
     def archive_cold(self, threshold: float = 0.05, min_age_days: int = 7) -> int:
@@ -1137,7 +1204,7 @@ class MemoryStore:
             if age_days < min_age_days:
                 continue
 
-            score = hotness_score(r["access_count"], r["updated_at"])
+            score = hotness_score(r["access_count"], r["updated_at"], category=r["category"])
             if score < threshold:
                 to_archive.append(r["id"])
 
