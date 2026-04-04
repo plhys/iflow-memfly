@@ -174,7 +174,7 @@ class MemoryDaemon:
             await self._generate_missing_recap()
 
         # 每日简报生成
-        if self.config.features.get("daily_briefing", True):
+        if self.config.features.get("daily_briefing", False):
             await self._generate_daily_briefing()
 
         # Embedding 补算：为之前 embedding 失败的记忆重新生成向量
@@ -605,8 +605,8 @@ class MemoryDaemon:
             except Exception as e:
                 logger.error(f"[记忆守护] 氛围快照生成异常: {e}")
 
-        # 状态快照 → SQLite
-        if features.get("state_snapshot", True):
+        # 状态快照 → SQLite（已合并到 atmosphere，默认关闭）
+        if features.get("state_snapshot", False):
             try:
                 state = await self.summarizer.generate_state_snapshot(messages)
                 if state:
