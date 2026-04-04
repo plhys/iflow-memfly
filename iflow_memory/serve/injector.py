@@ -245,6 +245,16 @@ class MemoryInjector:
         for mem in memories:
             mem_index.setdefault(mem["text"], mem)
 
+        # 动态注入：最近 3 天的短期记忆优先展示
+        cutoff = (datetime.now() - timedelta(days=3)).isoformat()
+        _SHORT_CATS = {"entity", "event", "insight"}
+        for cat in _SHORT_CATS:
+            if cat in grouped:
+                texts = grouped[cat]
+                recent = [t for t in texts if mem_index.get(t, {}).get("created_at", "") >= cutoff]
+                older = [t for t in texts if mem_index.get(t, {}).get("created_at", "") < cutoff]
+                grouped[cat] = recent + older
+
         # Emit each category in display order, skipping empty ones
         for cat_key, cat_name in CATEGORY_DISPLAY:
             texts = grouped.get(cat_key)

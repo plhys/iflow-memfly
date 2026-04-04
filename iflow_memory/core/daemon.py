@@ -522,6 +522,23 @@ class MemoryDaemon:
         target_file, start_line = result
         self.indexer.commit_progress(session_path, total_count)
 
+        # 索引 L3 内容到 conversations 表
+        if self.store:
+            try:
+                today = datetime.now().strftime("%Y-%m-%d")
+                ts = datetime.now().strftime("%H:%M")
+                conv_text = "\n".join(
+                    f"{'用户' if m['role'] in ('user', 'human') else 'AI'}: {m['text'][:500]}"
+                    for m in messages
+                )
+                self.store.add_conversation_segment(
+                    date=today, time_slot=ts,
+                    session_name=session_path.stem,
+                    content=conv_text,
+                )
+            except Exception as e:
+                logger.warning(f"[L3 索引] 对话片段写入失败: {e}")
+
         # LLM 步骤：跟踪成功数，全部失败则加入重试队列
         llm_ok = 0
 

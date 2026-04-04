@@ -378,6 +378,14 @@ def create_app(
                             src += f":{r['source_line']}"
                         meta += f" | 来源: {src}"
                     lines.append(meta)
+
+                # 同时搜索 L3 对话原文
+                conv_results = store_.search_conversations(query, limit=3, date_from=date_from)
+                if conv_results:
+                    lines.append(f"\n--- 相关对话原文 ---")
+                    for cr in conv_results:
+                        lines.append(f"[{cr['date']} {cr['time_slot']}] {cr['snippet']}")
+
                 text = "\n".join(lines)
 
             return {"content": [{"type": "text", "text": text}]}

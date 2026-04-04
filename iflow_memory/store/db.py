@@ -117,7 +117,7 @@ def _cjk_ratio(text: str) -> float:
 
 
 # Current schema version — bump this when adding migrations
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # 半衰期配置（天）——按类别区分
 _HALFLIFE_LONG = 90.0   # identity / correction / preference（长期事实）
@@ -257,6 +257,8 @@ class MemoryStore:
             self._migrate_v7()
         if version < 8:
             self._migrate_v8()
+        if version < 9:
+            self._migrate_v9()
 
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -464,6 +466,39 @@ class MemoryStore:
             pass  # 列已存在
         self._conn.commit()
 
+    def _migrate_v9(self) -> None:
+        """Migration v9: conversations table + FTS5 for L3 full-text search.
+
+        将 L3 对话原文片段写入 conversations 表并建立 FTS5 索引，
+        使 search_memory 能同时检索 L2 分类记忆和 L3 原始对话。
+        """
+        logger.info("Running migration v9: creating conversations + FTS5 tables")
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                time_slot TEXT NOT NULL,
+                session_name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversations_date
+                ON conversations(date DESC);
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
+                content,
+                content='conversations',
+                content_rowid='id',
+                tokenize='trigram'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS conversations_ai AFTER INSERT ON conversations BEGIN
+                INSERT INTO conversations_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+        """)
+        self._conn.commit()
+
     # ------------------------------------------------------------------
     # Seed memories (pre-installed lessons for new users)
     # ------------------------------------------------------------------
@@ -611,6 +646,58 @@ class MemoryStore:
         if rows:
             return dict(rows[0])
         return None
+
+    # ------------------------------------------------------------------
+    # L3 conversation operations
+    # ------------------------------------------------------------------
+
+    def add_conversation_segment(self, date: str, time_slot: str,
+                                  session_name: str, content: str) -> int:
+        """写入一段对话到 conversations 表，自动建立 FTS5 索引。"""
+        now = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "INSERT INTO conversations (date, time_slot, session_name, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (date, time_slot, session_name, content, now),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def search_conversations(self, query: str, limit: int = 5,
+                              date_from: str | None = None) -> list[dict]:
+        """搜索 L3 对话原文。"""
+        query = query.strip()
+        if not query:
+            return []
+
+        # FTS5 搜索：拆词 OR 匹配
+        fts_query = " OR ".join(f'"{w}"' for w in query.split() if w)
+        if not fts_query:
+            fts_query = f'"{query}"'
+
+        sql = """
+            SELECT c.id, c.date, c.time_slot, c.session_name,
+                   snippet(conversations_fts, 0, '>>>', '<<<', '...', 40) as snippet
+            FROM conversations_fts f
+            JOIN conversations c ON c.id = f.rowid
+        """
+        params: list = []
+        conditions = ["conversations_fts MATCH ?"]
+        params.append(fts_query)
+
+        if date_from:
+            conditions.append("c.date >= ?")
+            params.append(date_from)
+
+        sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY rank LIMIT ?"
+        params.append(limit)
+
+        try:
+            rows = self._conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.debug(f"Conversation search failed: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Write operations
