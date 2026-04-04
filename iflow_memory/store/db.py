@@ -670,6 +670,32 @@ class MemoryStore:
                 )
                 return row["id"], False
 
+        # Embedding dedup: 如果有向量且 vec 可用，检查余弦相似度
+        if embedding and self._vec_enabled:
+            try:
+                embed_blob = _serialize_f32(embedding)
+                similar = self._conn.execute(
+                    """SELECT m.id, m.text FROM memories m
+                       JOIN memories_vec v ON v.rowid = m.id
+                       WHERE m.category = ? AND m.archived = 0
+                       AND v.embedding MATCH ? AND k = 3
+                       ORDER BY distance""",
+                    (category, embed_blob),
+                ).fetchall()
+                for row in similar:
+                    # distance 是 L2 距离，转换为余弦相似度近似
+                    # vec0 的 MATCH 返回的是距离，越小越相似
+                    # 对于归一化向量，L2 distance < 0.3 约等于 cosine > 0.95
+                    if _jaccard_similarity(_normalize_text(row["text"]), norm_new) >= 0.6:
+                        self.mark_accessed([row["id"]])
+                        logger.info(
+                            f"Dedup (embedding+text): memory #{row['id']} similar, skipped. "
+                            f"Existing: {row['text'][:50]}... | New: {text[:50]}..."
+                        )
+                        return row["id"], False
+            except Exception as e:
+                logger.debug(f"Embedding dedup check failed (non-fatal): {e}")
+
         now = datetime.now(timezone.utc).isoformat()
         embed_blob = _serialize_f32(embedding) if embedding else None
         needs_embed = 1 if (embed_blob is None and self._vec_enabled) else 0
