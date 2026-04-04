@@ -46,7 +46,7 @@ class MemoryDaemon:
         self._process_task: asyncio.Task | None = None
         self._last_activity: dict[str, float] = {}  # session_key -> timestamp
         self._idle_flushed: set[str] = set()  # 已 idle-flush 的 session
-        self._llm_retry_queue: list[tuple[list[dict], Path, str]] = []  # LLM 失败重试队列
+        self._llm_retry_queue: list[tuple[list[dict], Path, str, int]] = []  # LLM 失败重试队列 (messages, path, source, retry_count)
 
     async def start(self) -> None:
         """初始化守护进程：健康自检 + embedder 初始化。"""
@@ -399,11 +399,12 @@ class MemoryDaemon:
             retry_batch = self._llm_retry_queue[:]
             self._llm_retry_queue.clear()
             logger.info(f"[LLM 重试] 处理 {len(retry_batch)} 个待重试 session")
-            for messages, session_path, source in retry_batch:
-                await self._retry_llm_steps(messages, session_path, source)
+            for messages, session_path, source, retry_count in retry_batch:
+                await self._retry_llm_steps(messages, session_path, source, retry_count)
 
     async def _retry_llm_steps(
         self, messages: list[dict], session_path: Path, source: str,
+        retry_count: int = 1,
     ) -> None:
         """重试 LLM 步骤（L3 已写入，只做分类记忆提取）。"""
         features = self.config.features
@@ -430,9 +431,11 @@ class MemoryDaemon:
             except Exception as e:
                 logger.error(f"[LLM 重试] 分类记忆提取异常: {e}")
 
-        if llm_ok == 0 and len(self._llm_retry_queue) < 20:
-            self._llm_retry_queue.append((messages, session_path, source))
-            logger.warning(f"[LLM 重试] 仍然失败，重新入队")
+        if llm_ok == 0 and retry_count < 3 and len(self._llm_retry_queue) < 20:
+            self._llm_retry_queue.append((messages, session_path, source, retry_count + 1))
+            logger.warning(f"[LLM 重试] 仍然失败，重新入队 (第 {retry_count + 1}/3 次)")
+        elif llm_ok == 0:
+            logger.error(f"[LLM 重试] 达到最大重试次数 ({retry_count})，放弃: {session_path.name}")
 
     async def flush_now(self) -> dict:
         """手动触发：立即处理所有 pending 消息并注入。
@@ -608,9 +611,14 @@ class MemoryDaemon:
                 logger.error(f"[记忆守护] 状态快照生成异常: {e}")
 
         # LLM 全部失败时加入重试队列（L3 已写入，只需重试 LLM 步骤）
-        if llm_ok == 0:
+        # 但如果所有 LLM 步骤都被 feature flag 关闭，不入队
+        has_llm_steps = any(
+            features.get(f, True)
+            for f in ("index_line", "summary", "classify", "state_snapshot")
+        )
+        if llm_ok == 0 and has_llm_steps:
             if len(self._llm_retry_queue) < 20:  # 防止无限堆积
-                self._llm_retry_queue.append((messages, session_path, source))
+                self._llm_retry_queue.append((messages, session_path, source, 1))
                 logger.warning(
                     f"[记忆守护] LLM 全部失败，加入重试队列 "
                     f"(队列长度: {len(self._llm_retry_queue)})"
