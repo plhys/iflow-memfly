@@ -343,6 +343,40 @@ python -m pytest tests/ -v
 
 ## Changelog
 
+### v2.0.1
+
+**Bug 修复**
+
+- **LLM 重试队列**：修复 feature-flag 全关闭时仍入队的问题，限制最大重试 3 次；失败记忆不再静默丢弃，加入重试队列等待重试
+- **Prompt Injection 防御**：增强注入检测，防止恶意记忆污染
+- **delete_memory 工具**：补全 MCP delete_memory 工具实现
+- **冲突检测**：新增记忆冲突检测机制，避免重复和矛盾记忆
+- **提取质量增强**：优化 LLM 记忆提取 prompt，提升提取准确率
+- **Embedding 向量去重**：新增向量去重逻辑，减少冗余存储
+- **Embedding 补算**：新增 embedding 补算机制，确保历史记忆可被向量搜索
+- **Hotness 半衰期按类别区分**：不同类别记忆使用不同的半衰期计算方式
+- **动态注入优化**：优化上下文感知记忆注入逻辑
+- **L3 对话原文可搜索**：L3 原文接入 FTS5 索引，支持全文检索
+
+**搜索增强**
+
+- FTS5 查询增加 OR fallback 策略
+- 新增 `date_from` 参数支持日期过滤
+- 优化 MCP tool 描述，提升可用性
+
+**性能优化**
+
+- Hotness 排序优化，注入内容精简（80→40 条，15→8 条）
+- Summarizer 每批处理从 3 条提升到 5 条
+- Correction/Identity 分类豁免 hotness 排序
+- 搜索结果 limit 从 10 提升到 50
+
+**代码重构**
+
+- 统一 MCP tool 定义到 shared tools.py
+- Source tracing：新增 source_file 和 source_line 字段，记录记忆来源
+- save_memory MCP handler 修复 + source_file 回填
+
 ### v2.0.0
 
 **新功能**
