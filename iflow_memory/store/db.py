@@ -696,6 +696,20 @@ class MemoryStore:
             except Exception as e:
                 logger.debug(f"Embedding dedup check failed (non-fatal): {e}")
 
+        # 冲突检测：对于 identity/preference/entity，相似度 0.4-0.8 可能是更新
+        if category in ("identity", "preference", "entity"):
+            for row in candidates:  # candidates 已在 fuzzy dedup 中获取
+                sim = _jaccard_similarity(_normalize_text(row["text"]), norm_new)
+                if 0.4 <= sim < _DEDUP_SIMILARITY_THRESHOLD:
+                    # 新记忆可能是旧记忆的更新版本，归档旧的，写入新的
+                    self.archive_by_ids([row["id"]])
+                    logger.info(
+                        f"Conflict resolved: archived #{row['id']} (sim={sim:.2f}), "
+                        f"replacing with new memory. "
+                        f"Old: {row['text'][:50]}... | New: {text[:50]}..."
+                    )
+                    break  # 只处理最相似的一条
+
         now = datetime.now(timezone.utc).isoformat()
         embed_blob = _serialize_f32(embedding) if embedding else None
         needs_embed = 1 if (embed_blob is None and self._vec_enabled) else 0

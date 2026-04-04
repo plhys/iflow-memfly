@@ -184,9 +184,9 @@ class TestMemoryStoreCRUD:
         base_entity = baseline["by_category"].get("entity", 0)
         base_insight = baseline["by_category"].get("insight", 0)
 
-        store.add("entity", "test entity one")
-        store.add("entity", "test entity two")
-        store.add("insight", "test insight")
+        store.add("entity", "GitHub 仓库地址是 https://github.com/plhys/iflow-memfly")
+        store.add("entity", "社区后端服务运行在端口 18800 上")
+        store.add("insight", "Caddy 重启后需要重新加载 TLS 证书配置")
 
         s = store.stats()
         assert s["total"] == base_total + 3

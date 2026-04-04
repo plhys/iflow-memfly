@@ -370,7 +370,7 @@ def create_app(
             else:
                 lines = [f"找到 {len(results)} 条相关记忆（按相关度排序）："]
                 for i, r in enumerate(results, 1):
-                    lines.append(f"#{i} [{r['category']}] {r['text']}")
+                    lines.append(f"#{i} [id:{r['id']}] [{r['category']}] {r['text']}")
                     meta = f"  创建: {r['created_at'][:10]} | 访问: {r['access_count']}次"
                     if r.get('source_file'):
                         src = r['source_file']
@@ -392,6 +392,16 @@ def create_app(
                 entries = [l for l in all_lines if l.startswith("- ")]
                 recent = entries[:n]
                 text = "\n".join(recent) if recent else "暂无对话索引"
+            return {"content": [{"type": "text", "text": text}]}
+
+        elif tool_name == "delete_memory":
+            ids = args.get("ids", [])
+            if not ids:
+                return {"content": [{"type": "text", "text": "请提供要删除的记忆 ID"}], "isError": True}
+            if store_ is None:
+                return {"content": [{"type": "text", "text": "记忆存储未初始化"}], "isError": True}
+            count = store_.archive_by_ids(ids)
+            text = f"已归档 {count} 条记忆（ID: {ids}）"
             return {"content": [{"type": "text", "text": text}]}
 
         elif tool_name == "save_memory":

@@ -53,4 +53,19 @@ MCP_TOOLS = [
             "properties": {},
         },
     },
+    {
+        "name": "delete_memory",
+        "description": "删除（归档）指定 ID 的记忆。当用户说'忘记这个'、'删除这条记忆'、'这个记忆不对'时使用。归档后的记忆不再出现在搜索结果中，但数据不会物理删除。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "要删除的记忆 ID 列表。可通过 search_memory 找到记忆后获取 ID。",
+                },
+            },
+            "required": ["ids"],
+        },
+    },
 ]
